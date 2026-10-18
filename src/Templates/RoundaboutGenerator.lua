@@ -473,39 +473,61 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 			return side * (gapAt(arm, a) / 2 + lanes * laneWidth)
 		end
 
+		-- Where the line along an arm at a lateral offset crosses the outline
+		-- offset by d, on the arm's side of the roundabout (of the line's two
+		-- crossings with the convex outline, the one furthest along the arm),
+		-- with the outline's normal there. A skewed arm meets the ring at an
+		-- angle, so this can lie behind the arm's mouth (negative axial).
+		local function crossing(arm, d, lat)
+			local best = nil
+			for i = 1, count do
+				local a, b = stations[i], stations[i % count + 1]
+				local qa, qb = point(a, d, 0), point(b, d, 0)
+				local la, lb = lateralOf(arm, qa) - lat, lateralOf(arm, qb) - lat
+				if la * lb <= 0 and la ~= lb then
+					local t = la / (la - lb)
+					local p = qa + (qb - qa) * t
+					local axial = axialOf(arm, p)
+					if best == nil or axial > best.Axial then
+						local nx, nz = a.NX + (b.NX - a.NX) * t, a.NZ + (b.NZ - a.NZ) * t
+						local length = math.sqrt(nx * nx + nz * nz)
+						best = { Point = p, NX = nx / length, NZ = nz / length, Axial = axial }
+					end
+				end
+			end
+			return best
+		end
+		-- How far along an arm the ring's outer edge is, at a lateral offset
+		-- (0 if the line misses the ring)
+		local function edgeAt(arm, lat)
+			local hit = crossing(arm, ringWidth, lat)
+			return if hit then hit.Axial else 0
+		end
+
 		-- Each side's kerb fillet: a circle of kerbRadius tangent to the arm's
 		-- side edge (at its ring end) and to the ring's outer edge, so its
-		-- centre lies on the outline offset by ringWidth + kerbRadius. Found
-		-- where that offset outline crosses the line beside the arm, on the
-		-- arm's side of the roundabout.
+		-- centre lies on the outline offset by ringWidth + kerbRadius, where
+		-- that crosses the line kerbRadius beyond the arm's side
 		for _, arm in arms do
 			arm.Fillets = {}
 			for _, side in { 1, -1 } do
 				local half = math.abs(outerAt(arm, side, 0))
-				local target = side * (half + kerbRadius)
-				local best = nil
-				for i = 1, count do
-					local a, b = stations[i], stations[i % count + 1]
-					local qa, qb = point(a, ringWidth + kerbRadius, 0), point(b, ringWidth + kerbRadius, 0)
-					local la, lb = lateralOf(arm, qa) - target, lateralOf(arm, qb) - target
-					if la * lb <= 0 and la ~= lb then
-						local t = la / (la - lb)
-						local c = qa + (qb - qa) * t
-						local axial = axialOf(arm, c)
-						if axial > 0 and (best == nil or axial < best.Axial) then
-							local nx, nz = a.NX + (b.NX - a.NX) * t, a.NZ + (b.NZ - a.NZ) * t
-							local length = math.sqrt(nx * nx + nz * nz)
-							best = { Centre = c, NX = nx / length, NZ = nz / length, Axial = axial }
-						end
-					end
+				local hit = crossing(arm, ringWidth + kerbRadius, side * (half + kerbRadius))
+				local fillet = nil
+				if hit then
+					local ring = hit.Point - Vector3.new(hit.NX, 0, hit.NZ) * kerbRadius
+					fillet = {
+						Centre = hit.Point,
+						Axial = hit.Axial,
+						Ring = ring,
+						RingLat = lateralOf(arm, ring),
+						Side = armPoint(arm, hit.Axial, side * half, 0),
+						-- The corner the fillet rounds off: where the arm's side
+						-- meets the ring's outer edge
+						Corner = (crossing(arm, ringWidth, side * half) or hit).Point,
+					}
 				end
-				if best then
-					local ring = best.Centre - Vector3.new(best.NX, 0, best.NZ) * kerbRadius
-					best.Ring = ring
-					best.RingLat = lateralOf(arm, ring)
-					best.Side = armPoint(arm, best.Axial, side * half, 0)
-				end
-				arm.Fillets[side] = best
+				arm.Fillets[side] = fillet
 			end
 			-- The stretch of ring the arm's mouth cuts across
 			local plus, minus = arm.Fillets[1], arm.Fillets[-1]
@@ -620,13 +642,26 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 			end
 			arm.NoseA = noseA
 
-			-- Slices along the arm, including where the footways start
+			-- Where the ring's outer edge crosses the arm's two sides: the arm
+			-- starts there (with a skew, behind its mouth on one side and
+			-- ahead of it on the other)
+			local edgePlus = edgeAt(arm, math.abs(outerAt(arm, 1, 0)))
+			local edgeMinus = edgeAt(arm, -math.abs(outerAt(arm, -1, 0)))
+			local back = math.min(edgePlus, edgeMinus, 0)
+			local front = math.max(edgePlus, edgeMinus)
+			-- The splitter island starts clear of the ring across its width
+			local islandStart = math.max(edgeAt(arm, arm.Splitter / 2), edgeAt(arm, -arm.Splitter / 2), 0)
+				+ ISLAND_START
+			arm.IslandStart = islandStart
+
+			-- Slices along the arm, including where it meets the ring and where
+			-- the footways start
 			local slices = {}
 			for k = 0, ARM_SLICES do
 				table.insert(slices, arm.Length * k / ARM_SLICES)
 			end
-			for _, extra in { ISLAND_START, noseA } do
-				if extra > 0 and extra < arm.Length then
+			for _, extra in { back, front, islandStart, noseA } do
+				if extra < arm.Length then
 					table.insert(slices, extra)
 				end
 			end
@@ -637,11 +672,17 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 				table.insert(slices, footwayStart[side])
 			end
 			table.sort(slices)
+			-- (Nothing behind where the arm meets the ring)
+			while slices[1] < back - 1e-6 do
+				table.remove(slices, 1)
+			end
 			arm.Slices = slices
 			arm.FootwayStart = footwayStart
 
 			-- The road: across the lanes, and across the footways too beyond
-			-- the fillets
+			-- the fillets. Where it overlaps the ring's road (up to the ring
+			-- edge's furthest point across the arm) it sits a hair lower, so
+			-- the ring's surface shows rather than flickering against it.
 			for k = 1, #slices - 1 do
 				local a0, a1 = slices[k], slices[k + 1]
 				if a1 - a0 > 1e-4 then
@@ -652,8 +693,9 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 					end
 					local lo0, hi0 = edges(a0)
 					local lo1, hi1 = edges(a1)
-					quad(armPoint(arm, a0, lo0, hRoadTop), armPoint(arm, a0, hi0, hRoadTop),
-						armPoint(arm, a1, hi1, hRoadTop), armPoint(arm, a1, lo1, hRoadTop),
+					local top = if a0 < front - 1e-4 then hRoadTop - 0.02 else hRoadTop
+					quad(armPoint(arm, a0, lo0, top), armPoint(arm, a0, hi0, top),
+						armPoint(arm, a1, hi1, top), armPoint(arm, a1, lo1, top),
 						roadColor, roadMaterial, roadMaterialVariant, ROAD_THICKNESS)
 					-- Footways along the sides
 					for _, side in { 1, -1 } do
@@ -665,7 +707,7 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 						end
 					end
 					-- The kerbed splitter island, up to its nose
-					if a0 >= ISLAND_START - 1e-4 and a1 <= noseA + 1e-4 then
+					if a0 >= islandStart - 1e-4 and a1 <= noseA + 1e-4 then
 						quad(armPoint(arm, a0, -gapAt(arm, a0) / 2, hSideTop), armPoint(arm, a0, gapAt(arm, a0) / 2, hSideTop),
 							armPoint(arm, a1, gapAt(arm, a1) / 2, hSideTop), armPoint(arm, a1, -gapAt(arm, a1) / 2, hSideTop),
 							islandColor, islandMaterial, "", CURB_HEIGHT)
@@ -673,12 +715,11 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 				end
 			end
 
-			-- The mouth: the kerb fillets, their footways, and the road
-			-- between them and the ring
-			local mouth = {}
+			-- The mouth's corners: each fillet's footway, and the road out to
+			-- its kerb, fanned from the corner it rounds off (where the arm's
+			-- side meets the ring's outer edge), which sees the whole arc
 			for _, side in { 1, -1 } do
 				local fillet = arm.Fillets[side]
-				local points = {}
 				if fillet then
 					local c = fillet.Centre
 					local fromAngle = math.atan2(fillet.Ring.Z - c.Z, fillet.Ring.X - c.X)
@@ -689,34 +730,18 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 						local angle = fromAngle + sweep * k / FILLET_STEPS
 						return Vector3.new(c.X + math.cos(angle) * radius, bottom + h, c.Z + math.sin(angle) * radius)
 					end
-					for k = 0, FILLET_STEPS do
-						table.insert(points, onArc(k, kerbRadius, hRoadTop))
-						if k < FILLET_STEPS and sidewalkWidth > 0 then
+					local corner = Vector3.new(fillet.Corner.X, bottom + hRoadTop, fillet.Corner.Z)
+					for k = 0, FILLET_STEPS - 1 do
+						tri(corner, onArc(k, kerbRadius, hRoadTop), onArc(k + 1, kerbRadius, hRoadTop),
+							roadColor, roadMaterial, roadMaterialVariant, ROAD_THICKNESS)
+						if sidewalkWidth > 0 then
 							quad(onArc(k, kerbRadius - sidewalkWidth, hSideTop), onArc(k, kerbRadius, hSideTop),
 								onArc(k + 1, kerbRadius, hSideTop), onArc(k + 1, kerbRadius - sidewalkWidth, hSideTop),
 								sidewalkColor, SIDEWALK_MATERIAL, "", CURB_HEIGHT)
 						end
 					end
-				else
-					local half = outerAt(arm, side, 0)
-					table.insert(points, armPoint(arm, 0, half, hRoadTop))
 				end
-				mouth[side] = points
 			end
-			-- Fan the mouth's road from a point on the arm's axis
-			local outline = {}
-			for _, p in mouth[1] do
-				table.insert(outline, p)
-			end
-			for k = #mouth[-1], 1, -1 do
-				table.insert(outline, mouth[-1][k])
-			end
-			local reach = math.min(footwayStart[1], footwayStart[-1])
-			local hub = armPoint(arm, reach / 2, 0, hRoadTop)
-			for k = 1, #outline - 1 do
-				tri(hub, outline[k], outline[k + 1], roadColor, roadMaterial, roadMaterialVariant, ROAD_THICKNESS)
-			end
-			tri(hub, outline[#outline], outline[1], roadColor, roadMaterial, roadMaterialVariant, ROAD_THICKNESS)
 		end
 
 		--[[
@@ -782,8 +807,10 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 
 			for _, arm in arms do
 				local slices = arm.Slices
-				-- A line along the arm at lat(a), from a0 to a1
+				-- A line along the arm at lat(a), from a0 (or from where it
+				-- meets the ring's outer edge, when a0 is nil) to a1
 				local function armLine(latAt, a0, a1, color, dotted)
+					a0 = a0 or edgeAt(arm, latAt(0))
 					local travelled = 0.3125 * DOTTED_MARK_TILE_LENGTH
 					for k = 1, #slices - 1 do
 						local s0, s1 = math.max(slices[k], a0), math.min(slices[k + 1], a1)
@@ -818,7 +845,7 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 					for k = 1, lanes - 1 do
 						armLine(function(a)
 							return side * (gapAt(arm, a) / 2 + k * laneWidth)
-						end, 0, arm.Length, laneColor, true)
+						end, nil, arm.Length, laneColor, true)
 					end
 				end
 				if arm.Splitter > 0 then
@@ -827,7 +854,7 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 					for _, side in { 1, -1 } do
 						armLine(function(a)
 							return side * (gapAt(arm, a) / 2 + CENTER_OFFSET)
-						end, 0, arm.Length, centreColor, false)
+						end, nil, arm.Length, centreColor, false)
 					end
 					-- Diagonal hatching between them ahead of the island's
 					-- nose, while there's room
@@ -835,7 +862,7 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 					local function faceAt(side, a)
 						return side * (gapAt(arm, a) / 2 + CENTER_OFFSET) - side * (MARK_WIDTH / 2 + HATCH_WIDTH / 2)
 					end
-					local a = math.max(arm.NoseA, ISLAND_START) + HATCH_SPACING / 2
+					local a = math.max(arm.NoseA, arm.IslandStart) + HATCH_SPACING / 2
 					while a < arm.Taper and gapAt(arm, a) / 2 + CENTER_OFFSET - inset > HATCH_WIDTH / 2 do
 						-- A stripe at 45 degrees through (a, 0), meeting each
 						-- border's inner face
@@ -854,21 +881,24 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 					for _, side in { 1, -1 } do
 						armLine(function()
 							return side * CENTER_OFFSET
-						end, 0, arm.Length, centreColor, false)
+						end, nil, arm.Length, centreColor, false)
 					end
 				end
 				-- Give way to traffic on the roundabout: a broken line across
-				-- the entry lanes at the ring
+				-- the entry lanes, following the ring's outer edge just
+				-- outside it (so on a skewed arm it runs along the ring, not
+				-- square across the arm)
 				if arm.Entry > 0 then
 					local entrySide = -exitSide
-					local inner = math.abs(gapAt(arm, GIVE_WAY_SETBACK) / 2) + (if arm.Exit > 0 then CENTER_OFFSET + 1 else EDGE_INSET)
-					local outer = math.abs(outerAt(arm, entrySide, GIVE_WAY_SETBACK)) - EDGE_INSET
+					local inner = math.abs(gapAt(arm, 0) / 2) + (if arm.Exit > 0 then CENTER_OFFSET + 1 else EDGE_INSET)
+					local outer = math.abs(outerAt(arm, entrySide, 0)) - EDGE_INSET
+					local function onLine(lat)
+						return armPoint(arm, edgeAt(arm, entrySide * lat) + GIVE_WAY_SETBACK, entrySide * lat, markHeight)
+					end
 					local lat = inner
 					while lat < outer do
 						local dashEnd = math.min(lat + GIVE_WAY_DASH, outer)
-						strip(armPoint(arm, GIVE_WAY_SETBACK, entrySide * lat, markHeight),
-							armPoint(arm, GIVE_WAY_SETBACK, entrySide * dashEnd, markHeight),
-							laneColor, GIVE_WAY_WIDTH, false)
+						strip(onLine(lat), onLine(dashEnd), laneColor, GIVE_WAY_WIDTH, false)
 						lat = dashEnd + GIVE_WAY_GAP
 					end
 				end
