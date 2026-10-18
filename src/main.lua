@@ -117,13 +117,14 @@ return function(plugin: Plugin, panel: DockWidgetPluginGui, buttonClicked: Signa
 						)
 					end
 				end,
-				AddIntersection = function(throughRoad: boolean)
+				AddIntersection = function(throughRoad: boolean, miniRoundabout: boolean?)
 					if session then
 						local preset = Presets.ByKey[activeSettings.SelectedPreset]
 						session.AddIntersectionInFrontOfCamera(
 							throughRoad,
 							activeSettings.AlignToWorld,
-							if preset then preset.Attributes else nil
+							if preset then preset.Attributes else nil,
+							miniRoundabout
 						)
 					end
 				end,

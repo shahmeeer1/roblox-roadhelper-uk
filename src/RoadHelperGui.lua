@@ -42,11 +42,12 @@ local function describeStatus(state: createRoadSession.SelectionState): string
 	if state.Kind == "none" then
 		return "Click the end of a road segment to select that endpoint."
 	elseif (state :: any).SegmentKind == "Intersection" then
+		local junction = if (state :: any).MiniRoundabout then "Mini roundabout" else "Intersection"
 		if state.Kind == "open" then
-			return "<b>Intersection exit selected.</b>"
-				.. "\nDrag a cone to extend this exit; the central handles move the whole intersection."
+			return `<b>{junction} exit selected.</b>`
+				.. "\nDrag a cone to extend this exit; the central handles move the whole junction."
 		else
-			return "<b>Connected intersection exit selected.</b>"
+			return `<b>Connected {string.lower(junction)} exit selected.</b>`
 		end
 	elseif (state :: any).SegmentKind == "Split" then
 		local which = if (state :: any).EndpointId == "Stem" then "stem" else "branch"
@@ -133,6 +134,55 @@ local function ParametersPanel(props: {
 					Changed = props.SetBlend,
 				}),
 			}),
+			MiniRoundabout = e(HelpGui.WithHelpIcon, {
+				Help = e(HelpGui.BasicTooltip, {
+					HelpRichText = "Make this junction a mini roundabout, laid out as in the UK: a white central island 1 to 4 m across, every entry giving way to traffic from the right at a broken white line, and arrows showing the clockwise circulation.",
+				}),
+				LayoutOrder = 3,
+				Subject = e(Checkbox, {
+					Label = "Mini roundabout",
+					Checked = (state :: any).MiniRoundabout,
+					Changed = function(value: boolean)
+						props.SetSegmentAttribute("MiniRoundabout", value)
+					end,
+				}),
+			}),
+			MiniRoundaboutRaised = if (state :: any).MiniRoundabout
+				then e(HelpGui.WithHelpIcon, {
+					Help = e(HelpGui.BasicTooltip, {
+						HelpRichText = "A raised (domed) island, at most 125 mm high so vehicles can still run over it, with a darker centre ringed in white. Off for a flush painted circle.",
+					}),
+					LayoutOrder = 4,
+					Subject = e(Checkbox, {
+						Label = "Raised island",
+						Checked = (state :: any).MiniRoundaboutRaised,
+						Changed = function(value: boolean)
+							props.SetSegmentAttribute("MiniRoundaboutRaised", value)
+						end,
+					}),
+				})
+				else nil,
+			MiniRoundaboutDiameter = if (state :: any).MiniRoundabout
+				then e(HelpGui.WithHelpIcon, {
+					Help = e(HelpGui.BasicTooltip, {
+						HelpRichText = "The central island's diameter in studs: UK mini roundabout islands are 1 to 4 m across (7 to 26 studs). It's also kept to half the narrower road's width, leaving room to drive round.",
+					}),
+					LayoutOrder = 5,
+					Subject = e(NumberInput, {
+						Label = "Island Diameter",
+						Value = (state :: any).MiniRoundaboutDiameter,
+						ValueEntered = function(value: number): number?
+							local diameter = math.clamp(
+								value,
+								RoadDefaults.MiniRoundaboutMinDiameter,
+								RoadDefaults.MiniRoundaboutMaxDiameter
+							)
+							props.SetSegmentAttribute("MiniRoundaboutDiameter", diameter)
+							return diameter
+						end,
+					}),
+				})
+				else nil,
 		})
 	end
 	if (state :: any).SegmentKind == "Split" then
@@ -585,7 +635,7 @@ local function AddPanel(props: {
 	CurrentSettings: Settings.RoadHelperSettings,
 	UpdatedSettings: () -> (),
 	AddSegment: (kind: RoadMath.SegmentKind) -> (),
-	AddIntersection: (throughRoad: boolean) -> (),
+	AddIntersection: (throughRoad: boolean, miniRoundabout: boolean?) -> (),
 	LayoutOrder: number?,
 })
 	-- With an endpoint selected the add handles in the viewport are the way to
@@ -711,6 +761,22 @@ local function AddPanel(props: {
 						props.AddIntersection(true)
 					end,
 				}),
+			}),
+		}),
+		MiniRoundaboutButton = e("Frame", {
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			LayoutOrder = nextOrder(),
+		}, {
+			Button = e(OperationButton, {
+				Text = "Mini Roundabout",
+				Height = 28,
+				Disabled = false,
+				Color = Colors.ACTION_BLUE,
+				OnClick = function()
+					props.AddIntersection(true, true)
+				end,
 			}),
 		}),
 	})
@@ -847,7 +913,7 @@ local function RoadHelperGui(props: {
 	SetSizing: (name: string, value: number) -> (),
 	SetSameLanesBothEnds: (same: boolean) -> (),
 	AddSegment: (kind: RoadMath.SegmentKind) -> (),
-	AddIntersection: (throughRoad: boolean) -> (),
+	AddIntersection: (throughRoad: boolean, miniRoundabout: boolean?) -> (),
 	CurrentSettings: Settings.RoadHelperSettings,
 	UpdatedSettings: () -> (),
 	HandleAction: (string) -> (),

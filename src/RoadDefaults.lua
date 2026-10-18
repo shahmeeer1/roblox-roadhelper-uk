@@ -27,6 +27,10 @@ local RoadDefaults = {
 	-- new split (about 36 m)
 	SplitSeparation = 16,
 	SplitLength = 240,
+	-- Mini roundabout central islands: UK islands are 1 to 4 m across
+	MiniRoundaboutDiameter = 20,
+	MiniRoundaboutMinDiameter = 7,
+	MiniRoundaboutMaxDiameter = 26,
 }
 
 -- Total road width with the default lane layout

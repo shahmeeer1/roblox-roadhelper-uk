@@ -41,5 +41,6 @@ return function(t: TestTypes.TestContext)
 		t.expect(attributes.SidewalkWidth).toBe(RoadDefaults.SidewalkWidth)
 		t.expect(attributes.MaxAngle).toBe(RoadDefaults.MaxAngle)
 		t.expect(attributes.IntersectionAngle).toBe(RoadDefaults.IntersectionAngle)
+		t.expect(attributes.MiniRoundaboutDiameter).toBe(RoadDefaults.MiniRoundaboutDiameter)
 	end)
 end

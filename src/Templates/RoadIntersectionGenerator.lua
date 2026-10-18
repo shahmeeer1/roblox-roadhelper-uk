@@ -36,6 +36,14 @@ local defaultAttributes = {
 	-- "Left" (UK) or "Right": which side traffic drives on, deciding which
 	-- lanes are the approach lanes the stop bars cross
 	DriveSide = "Left",
+	-- A mini roundabout instead of a priority junction: a white central island
+	-- (1-4 m across, 7-26 studs at 24 studs per 3.65 m lane), every entry giving
+	-- way at a broken line, and circulation arrows around the island.
+	-- Raised: a low dome (up to 125 mm) in the centre colour, ringed in white.
+	MiniRoundabout = false,
+	MiniRoundaboutRaised = false,
+	MiniRoundaboutDiameter = 20,
+	MiniRoundaboutCentreColor = Color3.fromRGB(60, 60, 64),
 	AdjustShowSnappingHelper = false,
 	RoadMaterial = Enum.Material.Concrete,
 	CenterlineColor = Color3.fromRGB(244, 205, 47),
@@ -68,6 +76,19 @@ local STOP_LINE_END_DISTANCE = 12
 -- Crosswalk stripe width/spacing, and its gap to the stop bar
 local CROSSWALK_STRIPE = 2
 local CROSSWALK_GAP = 2
+
+-- Mini roundabouts (at 24 studs per 3.65 m lane, about 6.6 studs per metre)
+local MINI_MIN_DIAMETER = 7 -- 1 m
+local MINI_MAX_DIAMETER = 26 -- 4 m
+local MINI_DOME_HEIGHT = 0.8 -- 125 mm
+local MINI_RING_WIDTH = 2 -- white ring around a raised dome
+-- The give way line: a single broken line of short dashes
+local GIVE_WAY_DASH = 4
+local GIVE_WAY_GAP = 2
+-- Circulation arrows around the island
+local ARROW_WIDTH = 1.2
+local ARROW_SWEEP = math.rad(40)
+local ARROW_HEAD = 3
 
 local function createPart(name, color, material, size, cframe)
 	local part = Instance.new("Part")
@@ -153,6 +174,13 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 
 		local maxAngle = math.rad(attributes.MaxAngle or 10)
 		local crossingWidth = math.max(attributes.CrossingWidth or 0, 0)
+		local miniRoundabout = attributes.MiniRoundabout == true
+		-- The island diameter, within UK limits and leaving room to circulate
+		-- (no wider than half the narrower roadway)
+		local miniIslandDiameter = math.min(
+			math.clamp(attributes.MiniRoundaboutDiameter or 20, MINI_MIN_DIAMETER, MINI_MAX_DIAMETER),
+			math.min((forwardZ + backwardZ) * attributes.LaneWidthZ, (forwardX + backwardX) * attributes.LaneWidthX) / 2
+		)
 
 		local function at(p: Vector3, h: number): Vector3
 			return Vector3.new(p.X, bottom + h, p.Z)
@@ -528,7 +556,21 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 					-- A crosswalk claims its space in front of the stop line
 					local crossingSpace = if crossingWidth > 0 then crossingWidth + CROSSWALK_GAP else 0
 					local tBar = math.max(tEnd - STOP_LINE_END_DISTANCE, tCutMin + STOP_LINE_WIDTH / 2 + crossingSpace)
-					local tMarks = tBar + STOP_LINE_WIDTH / 2 + 1
+					-- A mini roundabout's give way line sits at the junction
+					-- mouth, at the edge of the circulating area, with any
+					-- crosswalk set back beyond it (as at UK roundabouts)
+					local walkNear, walkFar
+					if miniRoundabout then
+						tBar = tCutMin + STOP_LINE_WIDTH / 2
+						walkNear = tBar + STOP_LINE_WIDTH / 2 + CROSSWALK_GAP
+						walkFar = walkNear + crossingWidth
+					else
+						walkFar = tBar - STOP_LINE_WIDTH / 2 - CROSSWALK_GAP
+						walkNear = walkFar - crossingWidth
+					end
+					local tMarks = if miniRoundabout and crossingWidth > 0
+						then walkFar + 1
+						else tBar + STOP_LINE_WIDTH / 2 + 1
 					for _, marking in markings do
 						if skipEdgeLatSide and marking.isEdge and math.sign(marking.lat) == skipEdgeLatSide then
 							-- Drawn continuously by the caller instead
@@ -560,13 +602,24 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 							then centerLat + latSign * (CENTER_OFFSET + 1)
 							else -latSign * (edgeLine - 1.5)
 						local latB = latSign * (edgeLine - 1.5)
-						markingStrip(n * latA + dir * tBar, n * latB + dir * tBar, laneMarkingColor, STOP_LINE_WIDTH)
+						if miniRoundabout then
+							-- Give way to traffic from the right: a single
+							-- broken line rather than a solid bar
+							local lo, hi = math.min(latA, latB), math.max(latA, latB)
+							local lat = lo
+							while lat < hi do
+								local dashEnd = math.min(lat + GIVE_WAY_DASH, hi)
+								markingStrip(n * lat + dir * tBar, n * dashEnd + dir * tBar, laneMarkingColor, STOP_LINE_WIDTH)
+								lat = dashEnd + GIVE_WAY_GAP
+							end
+						else
+							markingStrip(n * latA + dir * tBar, n * latB + dir * tBar, laneMarkingColor, STOP_LINE_WIDTH)
+						end
 					end
 					if crossingWidth > 0 then
-						-- Zebra crosswalk between the stop bar and the
-						-- junction, spanning the full drivable width
-						local walkFar = tBar - STOP_LINE_WIDTH / 2 - CROSSWALK_GAP
-						local walkNear = walkFar - crossingWidth
+						-- Zebra crosswalk spanning the full drivable width:
+						-- between the stop bar and the junction, or beyond a
+						-- mini roundabout's give way line
 						local span = edgeLine - 1.5
 						local lat = -span + CROSSWALK_STRIPE / 2
 						while lat <= span - CROSSWALK_STRIPE / 2 do
@@ -596,6 +649,93 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 				local data = cornerData[s .. "," .. latSide]
 				return if data then data.tX else nil
 			end, if throughRoad then { -1, 1 } else { 1 })
+
+			if miniRoundabout then
+				-- Circulation arrows around the island, one midway between
+				-- each pair of neighbouring arms: clockwise when driving on
+				-- the left (anticlockwise on the right). Plan angles here run
+				-- clockwise from -Z: theta 0 is -Z, theta 90 degrees is +X.
+				local function planAngle(d: Vector3): number
+					return math.atan2(d.X, -d.Z)
+				end
+				local armAngles = { planAngle(-uZ), planAngle(uZ), planAngle(uX) }
+				if throughRoad then
+					table.insert(armAngles, planAngle(-uX))
+				end
+				table.sort(armAngles)
+				local function onCircle(radius: number, theta: number): Vector3
+					return Vector3.new(radius * math.sin(theta), 0, -radius * math.cos(theta))
+				end
+				local roadwayHalf = math.min((forwardZ + backwardZ) * attributes.LaneWidthZ,
+					(forwardX + backwardX) * attributes.LaneWidthX) / 2
+				local islandRadius = miniIslandDiameter / 2
+				local arrowRadius = islandRadius + math.max(3, (roadwayHalf - islandRadius) * 0.55)
+				local travel = if driveSideSign < 0 then 1 else -1
+				for i, theta in armAngles do
+					local nextTheta = armAngles[i % #armAngles + 1]
+					if i == #armAngles then
+						nextTheta += 2 * math.pi
+					end
+					local mid = (theta + nextTheta) / 2
+					local startTheta = mid - travel * ARROW_SWEEP / 2
+					local endTheta = mid + travel * ARROW_SWEEP / 2
+					local chords = 4
+					for c = 0, chords - 1 do
+						local a = startTheta + (endTheta - startTheta) * c / chords
+						local b = startTheta + (endTheta - startTheta) * (c + 1) / chords
+						markingStrip(onCircle(arrowRadius, a), onCircle(arrowRadius, b), laneMarkingColor, ARROW_WIDTH)
+					end
+					-- The head: a V pointing along the direction of travel
+					local tip = onCircle(arrowRadius, endTheta)
+					local tangent = Vector3.new(math.cos(endTheta), 0, math.sin(endTheta)) * travel
+					local radial = tip.Unit
+					local tipAhead = tip + tangent * (ARROW_HEAD * 0.5)
+					local back = tipAhead - tangent * ARROW_HEAD
+					markingStrip(back + radial * (ARROW_HEAD * 0.6), tipAhead, laneMarkingColor, ARROW_WIDTH)
+					markingStrip(back - radial * (ARROW_HEAD * 0.6), tipAhead, laneMarkingColor, ARROW_WIDTH)
+				end
+			end
+		end
+
+		-- A mini roundabout's central island: a flush white circle, or a low
+		-- dome in the centre colour ringed in white. Drawn even without lane
+		-- markings, since the island is what makes it a roundabout. (The dome
+		-- doesn't collide: like real domed islands, vehicles can run over it.)
+		if miniRoundabout then
+			local function disc(diameter: number, height: number, color: Color3, material: Enum.Material)
+				local part = Instance.new("Part")
+				part.Shape = Enum.PartType.Cylinder
+				part.Anchored = true
+				part.TopSurface = SMOOTH
+				part.BottomSurface = SMOOTH
+				part.Name = "RoadMarking"
+				part.Color = color
+				part.Material = material
+				-- A cylinder's axis is its X: stand it upright
+				part.Size = Vector3.new(MARK_THICKNESS, diameter, diameter)
+				part.CFrame = CFrame.new(at(Vector3.zero, height)) * CFrame.Angles(0, 0, math.pi / 2)
+				part.Parent = targetContainer
+				return part
+			end
+			if attributes.MiniRoundaboutRaised then
+				disc(miniIslandDiameter + 2 * MINI_RING_WIDTH, hRoadTop + 0.05, laneMarkingColor, SAND)
+				local dome = Instance.new("Part")
+				dome.Anchored = true
+				dome.CanCollide = false
+				dome.Name = "MiniRoundaboutDome"
+				dome.Color = attributes.MiniRoundaboutCentreColor or Color3.fromRGB(60, 60, 64)
+				dome.Material = roadMaterial
+				-- A flattened sphere centred on the road surface: its upper
+				-- half is the dome
+				dome.Size = Vector3.new(miniIslandDiameter, 2 * MINI_DOME_HEIGHT, miniIslandDiameter)
+				dome.CFrame = CFrame.new(at(Vector3.zero, hRoadTop))
+				local mesh = Instance.new("SpecialMesh")
+				mesh.MeshType = Enum.MeshType.Sphere
+				mesh.Parent = dome
+				dome.Parent = targetContainer
+			else
+				disc(miniIslandDiameter, hRoadTop + 0.05, laneMarkingColor, SAND)
+			end
 		end
 
 		-- Snapping helpers: box-aligned cubes marking the corners of each open

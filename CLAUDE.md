@@ -122,6 +122,13 @@ lazy-loads `src/main.lua` on first activation.
   borders when both sides carry the same direction, diagonal hatching with broken borders
   when they're opposite (Highway Code rule 130), then a raised island from the nose. Splits
   are junctions (`RoadMath.isJunction`): flat, no adjust angles, moved as a whole.
+- Mini roundabouts are a variant of the intersection (`MiniRoundabout = true`), not a separate
+  kind, so they get everything junctions do (T/4-way, angle, lanes, crosswalks, moving).
+  UK layout: a white central island (`MiniRoundaboutDiameter`, 1-4 m = 7-26 studs, capped at
+  half the narrower roadway), every entry giving way at a single broken line at the junction
+  mouth (crosswalks set back beyond it), and circulation arrows between the arms (clockwise
+  when driving on the left). `MiniRoundaboutRaised` swaps the flush disc for a non-colliding
+  dome (125 mm) in `MiniRoundaboutCentreColor`, ringed in white.
 - The Adjust dir/grade/bank rotations all pivot about the endpoint centre point, so endpoint
   *positions* are invariant under angle edits — only move edits Size/pivot.
 - Joints are purely spatial: two ends within `RoadMath.JOINT_TOLERANCE` facing opposite ways.

@@ -81,6 +81,9 @@ export type SelectionState = {
 	SplitTotalLanes: number?,
 	SplitSeparation: number,
 	SplitLength: number,
+	MiniRoundabout: boolean,
+	MiniRoundaboutRaised: boolean,
+	MiniRoundaboutDiameter: number,
 	LaneWidth: number,
 	SidewalkWidth: number,
 	IntersectionAngle: number,
@@ -214,6 +217,11 @@ local GEOMETRY_ATTRIBUTES = {
 	-- Y split layout
 	SplitLanesLeft = true,
 	SplitSeparation = true,
+	-- Mini roundabout (an intersection variant)
+	MiniRoundabout = true,
+	MiniRoundaboutRaised = true,
+	MiniRoundaboutDiameter = true,
+	MiniRoundaboutCentreColor = true,
 }
 
 -- Give a new road segment the same lanes at both ends (a clone of a
@@ -1046,6 +1054,9 @@ local function createRoadSession(plugin: Plugin)
 		local roadLanesOut, roadLanesIn = RoadMath.getLaneCounts(openEnd)
 		newModel:SetAttribute("IntersectionAngle", RoadDefaults.IntersectionAngle)
 		newModel:SetAttribute("ThroughRoad", true)
+		-- A plain priority junction even when the template was a mini
+		-- roundabout (the panel switches it)
+		newModel:SetAttribute("MiniRoundabout", false)
 
 		-- Sized from the lane layout: the road width plus the default
 		-- corner radius' worth of extra space on each side. Path-like roads
@@ -1885,6 +1896,11 @@ local function createRoadSession(plugin: Plugin)
 			SplitSeparation = (selected.Segment.Model:GetAttribute("SplitSeparation") :: number?)
 				or RoadDefaults.SplitSeparation,
 			SplitLength = selected.Segment.Size.Z,
+			-- Intersections: the mini roundabout variant
+			MiniRoundabout = selected.Segment.Model:GetAttribute("MiniRoundabout") == true,
+			MiniRoundaboutRaised = selected.Segment.Model:GetAttribute("MiniRoundaboutRaised") == true,
+			MiniRoundaboutDiameter = (selected.Segment.Model:GetAttribute("MiniRoundaboutDiameter") :: number?)
+				or RoadDefaults.MiniRoundaboutDiameter,
 			LaneWidth = (selected.Segment.Model:GetAttribute("LaneWidth" .. laneAxisSuffix) :: number?) or RoadDefaults.LaneWidth,
 			SidewalkWidth = (selected.Segment.Model:GetAttribute("SidewalkWidth") :: number?) or RoadDefaults.SidewalkWidth,
 			IntersectionAngle = (selected.Segment.Model:GetAttribute("IntersectionAngle") :: number?) or RoadDefaults.IntersectionAngle,
@@ -2180,7 +2196,8 @@ local function createRoadSession(plugin: Plugin)
 	function session.AddIntersectionInFrontOfCamera(
 		throughRoad: boolean,
 		alignToWorld: boolean?,
-		presetAttributes: { [string]: any }?
+		presetAttributes: { [string]: any }?,
+		miniRoundabout: boolean?
 	)
 		local camera = workspace.CurrentCamera
 		if not camera then
@@ -2230,6 +2247,7 @@ local function createRoadSession(plugin: Plugin)
 			end
 		end
 		newModel:SetAttribute("ThroughRoad", throughRoad)
+		newModel:SetAttribute("MiniRoundabout", miniRoundabout == true)
 		newModel:SetAttribute("IntersectionAngle", RoadDefaults.IntersectionAngle)
 
 		-- Default size from the lane layout, like extending with one
