@@ -1,3 +1,5 @@
 *.rbxl
 *.rbxl.lock
 sourcemap.json
+# Rojo build output (plugin and test runner)
+*.rbxmx
