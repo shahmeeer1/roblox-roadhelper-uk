@@ -301,21 +301,60 @@ local function LaneMarkingsPanel(props: {
 	})
 end
 
+local LANE_CHANGE_SIDES = { "Offside", "Nearside" }
+
 local function SizingPanel(props: {
 	SelectionState: createRoadSession.SelectionState,
 	SetSizing: (name: string, value: number) -> (),
+	SetSameLanesBothEnds: (same: boolean) -> (),
+	SetSegmentAttribute: (name: string, value: any) -> (),
 	LayoutOrder: number?,
 })
 	local state = props.SelectionState
 	if state.Kind == "none" then
 		return nil :: any
 	end
+	local lanesEditable = (state :: any).LaneCountsEditable
+	local laneChangeSideChips: { [string]: any } = {
+		ListLayout = e("UIListLayout", {
+			FillDirection = Enum.FillDirection.Horizontal,
+			HorizontalAlignment = Enum.HorizontalAlignment.Left,
+			SortOrder = Enum.SortOrder.LayoutOrder,
+		}),
+		Corner = e("UICorner", {
+			CornerRadius = UDim.new(0, 4),
+		}),
+	}
+	for index, side in LANE_CHANGE_SIDES do
+		laneChangeSideChips[side] = e(ChipForToggle, {
+			Text = side,
+			IsCurrent = (state :: any).LaneChangeSide == side,
+			LayoutOrder = index,
+			OnClick = function()
+				props.SetSegmentAttribute("LaneChangeSide", side)
+			end,
+		})
+	end
 	return e(SubPanel, {
 		Title = "Sizing",
 		Padding = UDim.new(0, 6),
 		LayoutOrder = props.LayoutOrder,
 	}, {
-		LanesOutInput = e(HelpGui.WithHelpIcon, {
+		LanesHint = if not lanesEditable
+			then e("TextLabel", {
+				Size = UDim2.new(1, 0, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				BackgroundTransparency = 1,
+				TextColor3 = Colors.OFFWHITE,
+				Text = "This end is joined to another road, so its lanes can't change on their own. Select the open end of this lane change, or tick Same at both ends.",
+				TextWrapped = true,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				Font = Enum.Font.SourceSans,
+				TextSize = 16,
+				LayoutOrder = 1,
+			})
+			else nil,
+		LanesOutInput = if lanesEditable then e(HelpGui.WithHelpIcon, {
 			Help = e(HelpGui.BasicTooltip, {
 				HelpRichText = "Lanes carrying traffic <b>out</b> through the selected end. Zero makes a one-way road. The centre line sits between the two directions, and the bounds adjust so both endpoints stay in place.",
 			}),
@@ -333,8 +372,8 @@ local function SizingPanel(props: {
 					return count
 				end,
 			}),
-		}),
-		LanesInInput = e(HelpGui.WithHelpIcon, {
+		}) else nil,
+		LanesInInput = if lanesEditable then e(HelpGui.WithHelpIcon, {
 			Help = e(HelpGui.BasicTooltip, {
 				HelpRichText = "Lanes carrying traffic <b>in</b> through the selected end. Zero makes a one-way road. The centre line sits between the two directions, and the bounds adjust so both endpoints stay in place.",
 			}),
@@ -352,12 +391,40 @@ local function SizingPanel(props: {
 					return count
 				end,
 			}),
-		}),
+		}) else nil,
+		SameLanesCheckbox = if (state :: any).CanChangeLanes
+			then e(HelpGui.WithHelpIcon, {
+				Help = e(HelpGui.BasicTooltip, {
+					HelpRichText = "Untick to give the two ends different lane counts: a lane change. Lanes Out / In then set just the selected end, which must be open. The road tapers over its whole length, and the other direction runs straight through.",
+				}),
+				LayoutOrder = 3,
+				Subject = e(Checkbox, {
+					Label = "Same at both ends",
+					Checked = (state :: any).SameLanesBothEnds,
+					Changed = props.SetSameLanesBothEnds,
+				}),
+			})
+			else nil,
+		LaneChangeSide = if (state :: any).CanChangeLanes and (state :: any).LanesDiffer
+			then e(HelpGui.WithHelpIcon, {
+				Help = e(HelpGui.BasicTooltip, {
+					HelpRichText = "Which lane ends or starts.\n\u{2022} <b>Offside</b>: the lane by the centre line, e.g. a right-turn lane opening before a junction."
+						.. "\n\u{2022} <b>Nearside</b>: the lane by the kerb, e.g. a lane ending after a merge.",
+				}),
+				LayoutOrder = 4,
+				Subject = e("Frame", {
+					Size = UDim2.new(1, 0, 0, 0),
+					BorderSizePixel = 0,
+					BackgroundColor3 = Colors.ACTION_BLUE,
+					AutomaticSize = Enum.AutomaticSize.Y,
+				}, laneChangeSideChips),
+			})
+			else nil,
 		LaneWidthInput = e(HelpGui.WithHelpIcon, {
 			Help = e(HelpGui.BasicTooltip, {
 				HelpRichText = "Width of each lane in studs. The bounds adjust so both endpoints stay in place.",
 			}),
-			LayoutOrder = 3,
+			LayoutOrder = 5,
 			Subject = e(NumberInput, {
 				Label = "Lane Width",
 				Value = state.LaneWidth,
@@ -374,7 +441,7 @@ local function SizingPanel(props: {
 			Help = e(HelpGui.BasicTooltip, {
 				HelpRichText = "Width of the raised sidewalk on each side, in studs. Zero removes the sidewalks entirely.",
 			}),
-			LayoutOrder = 4,
+			LayoutOrder = 6,
 			Subject = e(NumberInput, {
 				Label = "Sidewalk Width",
 				Value = state.SidewalkWidth,
@@ -390,7 +457,7 @@ local function SizingPanel(props: {
 				Help = e(HelpGui.BasicTooltip, {
 					HelpRichText = "Width of the zebra crosswalks in front of the stop lines. Zero removes them. The bounding box grows to make room, so the turning space is kept.",
 				}),
-				LayoutOrder = 6,
+				LayoutOrder = 8,
 				Subject = e(NumberInput, {
 					Label = "Crosswalk Width",
 					Value = (state :: any).CrossingWidth,
@@ -407,7 +474,7 @@ local function SizingPanel(props: {
 				Help = e(HelpGui.BasicTooltip, {
 					HelpRichText = "The corner curve radius, controlled through the bounding box size beyond what the roads' widths require. Exact for 90 degree intersections; skewed corners vary around it.",
 				}),
-				LayoutOrder = 5,
+				LayoutOrder = 7,
 				Subject = e(NumberInput, {
 					Label = "Corner Radius",
 					Value = (state :: any).CornerRadius,
@@ -687,6 +754,7 @@ local function RoadHelperGui(props: {
 	SetSegmentAttribute: (name: string, value: any) -> (),
 	SetLaneMarkings: (mode: string) -> (),
 	SetSizing: (name: string, value: number) -> (),
+	SetSameLanesBothEnds: (same: boolean) -> (),
 	AddSegment: (kind: RoadMath.SegmentKind) -> (),
 	AddIntersection: (throughRoad: boolean) -> (),
 	CurrentSettings: Settings.RoadHelperSettings,
@@ -729,6 +797,8 @@ local function RoadHelperGui(props: {
 		SizingPanel = e(SizingPanel, {
 			SelectionState = props.SelectionState,
 			SetSizing = props.SetSizing,
+			SetSameLanesBothEnds = props.SetSameLanesBothEnds,
+			SetSegmentAttribute = props.SetSegmentAttribute,
 			LayoutOrder = nextOrder(),
 		}),
 		AddPanel = e(AddPanel, {

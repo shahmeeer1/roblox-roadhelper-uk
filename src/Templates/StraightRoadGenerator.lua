@@ -19,6 +19,13 @@ local defaultAttributes = {
 	-- Either may be zero for a one-way road.
 	LaneCountForward = 1,
 	LaneCountBackward = 1,
+	-- A lane change: the red end's own counts (-1 = same as the blue end). Both must
+	-- be set (>= 0) to take effect.
+	LaneCountForwardRed = -1,
+	LaneCountBackwardRed = -1,
+	-- Which lane of a changing direction ends or starts: "Offside" (by the centre
+	-- line) or "Nearside" (by the kerb)
+	LaneChangeSide = "Offside",
 	SidewalkWidth = 8,
 	MaxAngle = 10,
 	AdjustBlueGrade = 0,
@@ -94,26 +101,46 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 		local size = parameters.Size
 		local bottom = -size.Y / 2
 
-		-- Lane layout drives the geometry: the lane counts set everything, and Width is the
-		-- lanes plus the two sidewalks. Forward lanes carry traffic blue -> red, backward
+		-- Lane layout drives the geometry: the lane counts set everything, and the width is
+		-- the lanes plus the two sidewalks. Forward lanes carry traffic blue -> red, backward
 		-- lanes red -> blue; either may be zero (one-way), with at least one lane in all.
 		-- Lane markings are painted within the roadway, so they don't widen it.
+		--
+		-- A lane change gives the red end its own counts (LaneCountForwardRed and
+		-- LaneCountBackwardRed, both >= 0). The whole segment is then the taper: every
+		-- lane boundary blends from its blue-end position to its red-end position, and
+		-- the lanes that exist at only one end narrow to nothing at the other, on the side
+		-- LaneChangeSide picks ("Offside" by the centre line, "Nearside" by the kerb).
 		local laneWidth = attributes.LaneWidth
-		local forwardLanes = math.max(math.floor(attributes.LaneCountForward or 1), 0)
-		local backwardLanes = math.max(math.floor(attributes.LaneCountBackward or 1), 0)
-		if forwardLanes + backwardLanes < 1 then
-			forwardLanes = 1
+		local function laneCounts(forward, backward)
+			local f = math.max(math.floor(forward or 1), 0)
+			local b = math.max(math.floor(backward or 1), 0)
+			if f + b < 1 then
+				f = 1
+			end
+			return f, b
 		end
-		local numLanes = forwardLanes + backwardLanes
+		local forwardBlue, backwardBlue = laneCounts(attributes.LaneCountForward, attributes.LaneCountBackward)
+		local forwardRed, backwardRed = forwardBlue, backwardBlue
+		local forwardRedOverride = attributes.LaneCountForwardRed
+		local backwardRedOverride = attributes.LaneCountBackwardRed
+		if typeof(forwardRedOverride) == "number" and forwardRedOverride >= 0
+			and typeof(backwardRedOverride) == "number" and backwardRedOverride >= 0
+		then
+			forwardRed, backwardRed = laneCounts(forwardRedOverride, backwardRedOverride)
+		end
+		local laneChange = forwardRed ~= forwardBlue or backwardRed ~= backwardBlue
 		local driveOnLeft = attributes.DriveSide ~= "Right"
+		local changeAtNearside = attributes.LaneChangeSide == "Nearside"
 
 		local sidewalkWidth = attributes.SidewalkWidth or 8
-		local width = numLanes * laneWidth + (sidewalkWidth * 2)
-		local halfWidth = width / 2
+		local widthBlue = (forwardBlue + backwardBlue) * laneWidth + 2 * sidewalkWidth
+		local widthRed = (forwardRed + backwardRed) * laneWidth + 2 * sidewalkWidth
+		-- The bounding box is laid out around the wider end
+		local width = math.max(widthBlue, widthRed)
 
 		local hRoadTop = ROAD_THICKNESS
 		local hSideTop = ROAD_THICKNESS + CURB_HEIGHT
-		local edgeLine = halfWidth - sidewalkWidth - EDGE_INSET
 		-- Blue adjustments apply to the start end of the road (u = 0), red to the end
 		-- end (u = 1) — matching the colors of the snapping helper cubes.
 		local gradeStartSlope = math.tan(math.rad(attributes.AdjustBlueGrade or 0))
@@ -154,7 +181,6 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 			return x * c + z * s, -x * s + z * c
 		end
 
-		local halfX = sway + halfWidth
 		local halfZ = length / 2
 		local p0x, p0z = -sway, -halfZ
 		local t0x, t0z = rot2(0, 1, dirStart)
@@ -302,19 +328,53 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 		local innerSliceCount = if totalCost < 0.01
 			then 1
 			else math.max(1, MIN_SEGMENTS - 2, math.ceil(totalCost) - 1)
+		-- A lane change taper needs enough slices to read as a smooth curve, spaced
+		-- evenly when the path itself has next to no direction change to space them by
+		local evenSlices = laneChange and totalCost < 0.01
+		if laneChange then
+			innerSliceCount = math.max(innerSliceCount, MIN_SEGMENTS - 2)
+		end
 		local totalNumSegments = innerSliceCount + 2
 		local fullCost = totalCost / (innerSliceCount + 1)
 		local sliceCFrames = {}
+		local sliceS = {}
+		sliceS[1] = 0
 		sliceCFrames[1] = pathSliceCFrameAt(0)
 		for i = 0, innerSliceCount do
-			local s = if fullCost > 0
+			local s = if fullCost > 0 and not evenSlices
 				then sForCost(fullCost * (0.5 + i))
 				else (i + 0.5) / (innerSliceCount + 1) * totalLen
+			sliceS[i + 2] = s
 			sliceCFrames[i + 2] = pathSliceCFrameAt(s)
 		end
+		sliceS[totalNumSegments + 1] = totalLen
 		sliceCFrames[totalNumSegments + 1] = pathSliceCFrameAt(totalLen)
 		-- ends need no squaring: the end slices use the exact turned end headings, and
 		-- the climb profile's end pitch is exactly the configured grade (zero by default).
+
+		-- Lane change blend at each slice: 0 at the blue end, 1 at the red end. It follows
+		-- the path's sideways progress, so when the ends are offset by half the width
+		-- change (as RoadHelper places them) the kerb on the unchanged side runs straight.
+		-- With no sideways offset it's a smoothstep along the length.
+		local sliceBlend = {}
+		local startX = pathAt(0)
+		local endX = pathAt(totalLen)
+		for i = 1, totalNumSegments + 1 do
+			local blend = 0
+			if laneChange then
+				if math.abs(endX - startX) > 0.01 then
+					blend = math.clamp((pathAt(sliceS[i]) - startX) / (endX - startX), 0, 1)
+				else
+					local u = sliceS[i] / totalLen
+					blend = u * u * (3 - 2 * u)
+				end
+			end
+			sliceBlend[i] = blend
+		end
+		-- A lateral position given at both ends ({ B = blue, R = red }) at slice i
+		local function latAt(pair, i)
+			return pair.B + (pair.R - pair.B) * sliceBlend[i]
+		end
 
 		-- two WedgeParts forming triangle pa-pb-pc, extruded `thickness` to the underside
 		local function tri(pa, pb, pc, color, material, mVariant, thickness)
@@ -387,48 +447,154 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 		--[[
 			Draw the actual road
 		--]]
-		-- Build a sorted list of every lane marking: its lateral position and color.
-		-- Edge markings are always present. The other lane boundaries sit every laneWidth
-		-- across the roadway: the one between the two travel directions gets the double
-		-- centre line, the rest dotted dividers. +lat is left of blue -> red travel, so
-		-- driving on the left puts the forward lanes on the +lat side.
-		local laneMarkings = {
-			{ lat = -edgeLine, color = laneMarkingColor },
-			{ lat = edgeLine, color = laneMarkingColor },
-		}
+		--[[
+			Lane layout. Lanes are listed across the roadway from -lat to +lat (+lat is left
+			of blue -> red travel, so driving on the left puts the forward lanes on the
+			+lat side). Each lane records whether it exists at the blue (B) and red (R)
+			ends: a changing direction's extra lanes exist at one end only, placed at its
+			nearside (outer) or offside (inner, by the centre line) edge, and have zero
+			width at the other end. Every lateral position below is a { B, R } pair.
+		--]]
+		local function directionLanes(blueCount, redCount)
+			-- Innermost (offside) lane first
+			local count = math.max(blueCount, redCount)
+			local lanes = table.create(count)
+			for i = 1, count do
+				lanes[i] = { B = true, R = true }
+			end
+			local narrowEnd = if blueCount < redCount then "B" else "R"
+			for j = 1, count - math.min(blueCount, redCount) do
+				local index = if changeAtNearside then count - j + 1 else j
+				lanes[index][narrowEnd] = false
+			end
+			return lanes
+		end
+		local minusLanes = if driveOnLeft
+			then directionLanes(backwardBlue, backwardRed)
+			else directionLanes(forwardBlue, forwardRed)
+		local plusLanes = if driveOnLeft
+			then directionLanes(forwardBlue, forwardRed)
+			else directionLanes(backwardBlue, backwardRed)
+		local lanes = {}
+		for i = #minusLanes, 1, -1 do
+			table.insert(lanes, minusLanes[i])
+		end
+		-- The boundary between the two travel directions, when there are two
+		local centerBoundary = if #minusLanes > 0 and #plusLanes > 0 then #lanes else nil
+		for _, lane in plusLanes do
+			table.insert(lanes, lane)
+		end
+		local laneTotal = #lanes
 
-		local centerBoundary = if driveOnLeft then backwardLanes else forwardLanes
-		for k = 1, numLanes - 1 do
-			local lat = -numLanes * laneWidth / 2 + k * laneWidth
+		-- Boundary k (0..laneTotal) sits after lane k, so lane k spans boundaries k - 1
+		-- to k; the roadway is centred on the path at each end
+		local boundaries = {}
+		local roadwayHalf = {}
+		for k = 0, laneTotal do
+			boundaries[k] = {}
+		end
+		for _, e in { "B", "R" } do
+			local total = 0
+			for _, lane in lanes do
+				if lane[e] then
+					total += laneWidth
+				end
+			end
+			roadwayHalf[e] = total / 2
+			local lat = -total / 2
+			for k = 0, laneTotal do
+				if k > 0 and lanes[k][e] then
+					lat += laneWidth
+				end
+				boundaries[k][e] = lat
+			end
+		end
+		local halfWidth = { B = roadwayHalf.B + sidewalkWidth, R = roadwayHalf.R + sidewalkWidth }
+
+		-- Where lane line k lies at end e. A line beside a lane that's absent there has
+		-- merged into the next line over: the edge line, a centre line, or a lane line.
+		local function lineLat(k, e)
+			local j = k
+			while j >= 1 and not lanes[j][e] do
+				j -= 1
+			end
+			if j < k then
+				if j == 0 then
+					return boundaries[0][e] + EDGE_INSET
+				elseif j == centerBoundary then
+					return boundaries[j][e] + CENTER_OFFSET
+				end
+				return boundaries[j][e]
+			end
+			j = k + 1
+			while j <= laneTotal and not lanes[j][e] do
+				j += 1
+			end
+			j -= 1
+			if j > k then
+				if j == laneTotal then
+					return boundaries[laneTotal][e] - EDGE_INSET
+				elseif j == centerBoundary then
+					return boundaries[j][e] - CENTER_OFFSET
+				end
+				return boundaries[j][e]
+			end
+			return boundaries[k][e]
+		end
+
+		-- Build a sorted list of every lane marking: its lateral position at each end and
+		-- its color. Edge markings are always present; the boundary between the two travel
+		-- directions gets the double centre line, the other lane boundaries dotted lines.
+		local laneMarkings = {
+			{ B = boundaries[0].B + EDGE_INSET, R = boundaries[0].R + EDGE_INSET, color = laneMarkingColor },
+			{
+				B = boundaries[laneTotal].B - EDGE_INSET,
+				R = boundaries[laneTotal].R - EDGE_INSET,
+				color = laneMarkingColor,
+			},
+		}
+		for k = 1, laneTotal - 1 do
 			if k == centerBoundary then
-				table.insert(laneMarkings, { lat = lat - CENTER_OFFSET, color = centerlineColor })
-				table.insert(laneMarkings, { lat = lat + CENTER_OFFSET, color = centerlineColor })
+				for _, offset in { -CENTER_OFFSET, CENTER_OFFSET } do
+					table.insert(laneMarkings, {
+						B = boundaries[k].B + offset,
+						R = boundaries[k].R + offset,
+						color = centerlineColor,
+					})
+				end
 			else
-				table.insert(laneMarkings, { lat = lat, color = laneMarkingColor, isDotted = true })
+				table.insert(laneMarkings, {
+					B = lineLat(k, "B"),
+					R = lineLat(k, "R"),
+					color = laneMarkingColor,
+					isDotted = true,
+				})
 			end
 		end
 
 		table.sort(laneMarkings, function(a, b)
-			return a.lat < b.lat
+			if a.B ~= b.B then
+				return a.B < b.B
+			end
+			return a.R < b.R
 		end)
 
 		-- Asphalt surface: one quad-strip per lane, with boundaries at marking centers.
 		-- The outer strips (-halfWidth → first marking and last marking → +halfWidth)
 		-- cover the road shoulders that sit under the raised curbs.
+		local outerMinus = { B = -halfWidth.B, R = -halfWidth.R }
+		local outerPlus = { B = halfWidth.B, R = halfWidth.R }
 		local asphaltBoundaries
 		if hasVerticality then
 			-- Road climbs: split at every marking so each quad stays close to planar
-			asphaltBoundaries = {}
-			table.insert(asphaltBoundaries, -halfWidth)
+			asphaltBoundaries = { outerMinus }
 			for _, marking in laneMarkings do
-				if not marking.skipAsphaltBoundary then
-					table.insert(asphaltBoundaries, marking.lat)
-				end
+				table.insert(asphaltBoundaries, marking)
 			end
-			table.insert(asphaltBoundaries, halfWidth)
+			table.insert(asphaltBoundaries, outerPlus)
 		else
 			-- Flat road: a single strip across the full width is always planar
-			asphaltBoundaries = { -halfWidth, halfWidth }
+			asphaltBoundaries = { outerMinus, outerPlus }
 		end
 
 		-- Twist makes strip quads non-planar, and their triangles crease visibly
@@ -461,9 +627,11 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 			local subdivided = { asphaltBoundaries[1] }
 			for i = 2, #asphaltBoundaries do
 				local a, b = asphaltBoundaries[i - 1], asphaltBoundaries[i]
-				local pieces = math.max(math.ceil((b - a) / maxStripWidth - 0.01), 1)
+				local widest = math.max(b.B - a.B, b.R - a.R)
+				local pieces = math.max(math.ceil(widest / maxStripWidth - 0.01), 1)
 				for piece = 1, pieces - 1 do
-					table.insert(subdivided, a + (b - a) * piece / pieces)
+					local f = piece / pieces
+					table.insert(subdivided, { B = a.B + (b.B - a.B) * f, R = a.R + (b.R - a.R) * f })
 				end
 				table.insert(subdivided, b)
 			end
@@ -475,15 +643,17 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 			local nextSlice = sliceCFrames[segIndex + 1]
 
 			for boundIndex = 1, #asphaltBoundaries - 1 do
-				local leftEdge = asphaltBoundaries[boundIndex]
-				local rightEdge = asphaltBoundaries[boundIndex + 1]
-				local stripWidth = rightEdge - leftEdge
-				if stripWidth > 0.01 then
+				local leftPair = asphaltBoundaries[boundIndex]
+				local rightPair = asphaltBoundaries[boundIndex + 1]
+				local leftA, rightA = latAt(leftPair, segIndex), latAt(rightPair, segIndex)
+				local leftB, rightB = latAt(leftPair, segIndex + 1), latAt(rightPair, segIndex + 1)
+				-- A strip narrowing to nothing (an ending lane) still draws as a triangle
+				if rightA - leftA > 0.01 or rightB - leftB > 0.01 then
 					quad(
-						thisSlice * Vector3.new(leftEdge, hRoadTop, 0),
-						thisSlice * Vector3.new(rightEdge, hRoadTop, 0),
-						nextSlice * Vector3.new(rightEdge, hRoadTop, 0),
-						nextSlice * Vector3.new(leftEdge, hRoadTop, 0),
+						thisSlice * Vector3.new(leftA, hRoadTop, 0),
+						thisSlice * Vector3.new(rightA, hRoadTop, 0),
+						nextSlice * Vector3.new(rightB, hRoadTop, 0),
+						nextSlice * Vector3.new(leftB, hRoadTop, 0),
 						roadColor,
 						roadMaterial,
 						roadMaterialVariant,
@@ -495,15 +665,15 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 
 		-- Raised curbs / sidewalks
 		for _, sgn in { -1, 1 } do
-			local innerLat = sgn * (halfWidth - sidewalkWidth)
-			local outerLat = sgn * halfWidth
 			for i = 1, totalNumSegments do
 				local fa, fb = sliceCFrames[i], sliceCFrames[i + 1]
+				local outerA, outerB = sgn * latAt(halfWidth, i), sgn * latAt(halfWidth, i + 1)
+				local innerA, innerB = outerA - sgn * sidewalkWidth, outerB - sgn * sidewalkWidth
 				quad(
-					fa * Vector3.new(innerLat, hSideTop, 0),
-					fa * Vector3.new(outerLat, hSideTop, 0),
-					fb * Vector3.new(outerLat, hSideTop, 0),
-					fb * Vector3.new(innerLat, hSideTop, 0),
+					fa * Vector3.new(innerA, hSideTop, 0),
+					fa * Vector3.new(outerA, hSideTop, 0),
+					fb * Vector3.new(outerB, hSideTop, 0),
+					fb * Vector3.new(innerB, hSideTop, 0),
 					sidewalkColor,
 					SIDEWALK_MATERIAL,
 					SIDEWALK_MATERIAL_VARIANT,
@@ -531,14 +701,13 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 		local drawnMarkings = if haveLaneMarkings then laneMarkings else {}
 		for _, marking in drawnMarkings do
 			local color = marking.color
-			local lat = marking.lat
 			local isDotted = marking.isDotted
 			local dotOffset = marking.dotOffset or 0
 
 			for i = 1, totalNumSegments do
 				parameters:Pause()
-				local pa = sliceCFrames[i] * Vector3.new(lat, hRoadTop + 0.05, 0)
-				local pb = sliceCFrames[i + 1] * Vector3.new(lat, hRoadTop + 0.05, 0)
+				local pa = sliceCFrames[i] * Vector3.new(latAt(marking, i), hRoadTop + 0.05, 0)
+				local pb = sliceCFrames[i + 1] * Vector3.new(latAt(marking, i + 1), hRoadTop + 0.05, 0)
 				if (pb - pa).Magnitude < 1e-4 then
 					continue
 				end
@@ -611,8 +780,8 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 				for i = 1, totalNumSegments do
 					parameters:Pause()
 					local fa, fb = sliceCFrames[i], sliceCFrames[i + 1]
-					local topA = fa * Vector3.new(sgn * halfWidth, blendTop, 0)
-					local topB = fb * Vector3.new(sgn * halfWidth, blendTop, 0)
+					local topA = fa * Vector3.new(sgn * latAt(halfWidth, i), blendTop, 0)
+					local topB = fb * Vector3.new(sgn * latAt(halfWidth, i + 1), blendTop, 0)
 					local slopeA = fa:VectorToWorldSpace(Vector3.new(sgn * cosA, -sinA, 0)) * BLEND_LENGTH
 					local slopeB = fb:VectorToWorldSpace(Vector3.new(sgn * cosA, -sinA, 0)) * BLEND_LENGTH
 
@@ -695,10 +864,10 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 			end
 			local blue = Color3.fromRGB(0, 100, 255)
 			local red = Color3.fromRGB(255, 40, 40)
-			helperCube(blue, p0x - halfWidth, climbY(0), -halfZ + 2)
-			helperCube(blue, p0x + halfWidth, climbY(0), -halfZ + 2)
-			helperCube(red, p1x - halfWidth, climbY(1), halfZ - 2)
-			helperCube(red, p1x + halfWidth, climbY(1), halfZ - 2)
+			helperCube(blue, p0x - halfWidth.B, climbY(0), -halfZ + 2)
+			helperCube(blue, p0x + halfWidth.B, climbY(0), -halfZ + 2)
+			helperCube(red, p1x - halfWidth.R, climbY(1), halfZ - 2)
+			helperCube(red, p1x + halfWidth.R, climbY(1), halfZ - 2)
 		end
 	end,
 }

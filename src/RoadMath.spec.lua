@@ -653,6 +653,9 @@ return function(t: TestTypes.TestContext)
 		attrs.LaneCountForwardRed = 1
 		-- Only one override: not a lane change yet
 		t.expect(RoadMath.hasLaneChange(seg)).toBe(false)
+		-- -1 (the generator default) means unset
+		attrs.LaneCountBackwardRed = -1
+		t.expect(RoadMath.hasLaneChange(seg)).toBe(false)
 		local lanesOut, lanesIn = RoadMath.getLaneCounts(RoadMath.getEndpoint(seg, "Red"))
 		t.expect(lanesOut).toBe(2)
 		t.expect(lanesIn).toBe(2)
@@ -708,6 +711,28 @@ return function(t: TestTypes.TestContext)
 		local newBlue, newRed = RoadMath.getEndpoints(resized)
 		expectFuzzy(t, newBlue.WorldCFrame.Position, blue.WorldCFrame.Position)
 		expectFuzzy(t, newRed.WorldCFrame.Position, red.WorldCFrame.Position)
+	end)
+
+	t.test("swappedLaneValues: lanes out/in stay with each geographic end", function()
+		local seg = makeSegment("Straight", Vector3.new(WIDTH, 10, 200), CFrame.identity)
+		local attrs = (seg.Model :: any).attrs
+		attrs.LaneCountForward = 2
+		attrs.LaneCountBackward = 1
+		-- Plain road: forward and backward trade places
+		local swapped = RoadMath.swappedLaneValues(seg)
+		t.expect(swapped.LaneCountForward).toBe(1)
+		t.expect(swapped.LaneCountBackward).toBe(2)
+		t.expect(swapped.LaneCountForwardRed).toBe(nil)
+
+		-- Lane change: blue 2/1, red 1/1. The old blue end (2 in, 1 out)
+		-- becomes the red end: forward (out at red) = 1, backward (in) = 2
+		attrs.LaneCountForwardRed = 1
+		attrs.LaneCountBackwardRed = 1
+		swapped = RoadMath.swappedLaneValues(seg)
+		t.expect(swapped.LaneCountForwardRed).toBe(1)
+		t.expect(swapped.LaneCountBackwardRed).toBe(2)
+		t.expect(swapped.LaneCountForward).toBe(1)
+		t.expect(swapped.LaneCountBackward).toBe(1)
 	end)
 
 	t.test("laneChangeShift: the other direction's kerb stays put", function()

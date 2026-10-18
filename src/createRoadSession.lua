@@ -68,6 +68,15 @@ export type SelectionState = {
 	-- intersections, on the selected exit's road)
 	LanesOut: number,
 	LanesIn: number,
+	-- Lane changes (straights only): whether the segment can have different
+	-- lanes at each end, whether it currently has the same at both, whether
+	-- the counts actually differ, whether the selected end's counts can be
+	-- edited now, and which side lanes end/start on
+	CanChangeLanes: boolean,
+	SameLanesBothEnds: boolean,
+	LanesDiffer: boolean,
+	LaneCountsEditable: boolean,
+	LaneChangeSide: "Offside" | "Nearside",
 	LaneWidth: number,
 	SidewalkWidth: number,
 	IntersectionAngle: number,
@@ -180,9 +189,12 @@ local GEOMETRY_ATTRIBUTES = {
 	AdjustRedBank = true,
 	-- Lane counts depend on which way each segment runs, so they are set
 	-- explicitly to match travel directions across the joint
-	-- (matchLanesAcrossJoint) rather than copied
+	-- (matchLanesAcrossJoint) rather than copied; and new segments start
+	-- with the same lanes at both ends
 	LaneCountForward = true,
 	LaneCountBackward = true,
+	LaneCountForwardRed = true,
+	LaneCountBackwardRed = true,
 	-- Intersection lane layout (translated onto the road's lane attributes
 	-- when extending an intersection end, not copied directly)
 	LaneCountForwardX = true,
@@ -194,6 +206,14 @@ local GEOMETRY_ATTRIBUTES = {
 	IntersectionAngle = true,
 	ThroughRoad = true,
 }
+
+-- Give a new road segment the same lanes at both ends (a clone of a
+-- lane-change straight would otherwise keep its red-end counts)
+local function clearLaneChange(model: Model)
+	for _, name in RoadMath.RED_LANE_OVERRIDES do
+		model:SetAttribute(name, nil)
+	end
+end
 
 -- Give one end of a (typically new) segment the lanes matching the end it
 -- joins: the traffic leaving through one end enters through the other
@@ -538,6 +558,13 @@ local function createRoadSession(plugin: Plugin)
 			end)
 			for name, value in swapped do
 				model:SetAttribute(name, value)
+			end
+			-- Travel through the segment reversed too: its lanes follow
+			local info = RoadMath.getSegmentInfo(model)
+			if info then
+				for name, value in RoadMath.swappedLaneValues(info) do
+					model:SetAttribute(name, value)
+				end
 			end
 		end
 		if wasFlipped ~= solution.Flip then
@@ -924,6 +951,7 @@ local function createRoadSession(plugin: Plugin)
 			newModel:SetAttribute("LaneWidth", sourceModel:GetAttribute("LaneWidth" .. axis) or RoadDefaults.LaneWidth)
 		end
 		-- The lanes carry on through the joint in the same travel directions
+		clearLaneChange(newModel)
 		matchLanesAcrossJoint(openEnd, newModel, kind, joinId)
 		newModel:SetAttribute("Flip", false)
 		for _, axis in ADJUST_AXES do
@@ -1436,6 +1464,7 @@ local function createRoadSession(plugin: Plugin)
 			newModel:SetAttribute("LaneCountBackward", lanesIn)
 			width = RoadMath.endpointWidth(selected)
 		end
+		clearLaneChange(newModel)
 		newModel:SetAttribute("Flip", false)
 		for _, axis in ADJUST_AXES do
 			newModel:SetAttribute(RoadMath.adjustAttributeName("Blue", axis), 0)
@@ -1755,6 +1784,15 @@ local function createRoadSession(plugin: Plugin)
 		local partner = getPartnerEndpoint()
 		local laneAxisSuffix = RoadMath.laneSuffix(selected.Segment.Kind, selected.Id)
 		local lanesOut, lanesIn = RoadMath.getLaneCounts(selected)
+		local canChangeLanes = RoadMath.supportsLaneChange(selected.Segment.Kind)
+		local sameLanes = not RoadMath.hasLaneChange(selected.Segment)
+		local lanesDiffer = false
+		if canChangeLanes then
+			-- Blue's out/in are backward/forward, red's forward/backward
+			local blueOut, blueIn = RoadMath.getLaneCounts(RoadMath.getEndpoint(selected.Segment, "Blue"))
+			local redOut, redIn = RoadMath.getLaneCounts(RoadMath.getEndpoint(selected.Segment, "Red"))
+			lanesDiffer = blueOut ~= redIn or blueIn ~= redOut
+		end
 		return {
 			Kind = if partner then "closed" else "open",
 			SegmentKind = selected.Segment.Kind,
@@ -1770,6 +1808,15 @@ local function createRoadSession(plugin: Plugin)
 			-- For intersections, the lane layout of the selected end's road
 			LanesOut = lanesOut,
 			LanesIn = lanesIn,
+			CanChangeLanes = canChangeLanes,
+			SameLanesBothEnds = sameLanes,
+			LanesDiffer = lanesDiffer,
+			-- Lane counts of a single end can only change at an open end:
+			-- changing a joined end would have to drag its neighbour along
+			LaneCountsEditable = sameLanes or not partner,
+			LaneChangeSide = if selected.Segment.Model:GetAttribute("LaneChangeSide") == "Nearside"
+				then "Nearside"
+				else "Offside",
 			LaneWidth = (selected.Segment.Model:GetAttribute("LaneWidth" .. laneAxisSuffix) :: number?) or RoadDefaults.LaneWidth,
 			SidewalkWidth = (selected.Segment.Model:GetAttribute("SidewalkWidth") :: number?) or RoadDefaults.SidewalkWidth,
 			IntersectionAngle = (selected.Segment.Model:GetAttribute("IntersectionAngle") :: number?) or RoadDefaults.IntersectionAngle,
@@ -1886,11 +1933,98 @@ local function createRoadSession(plugin: Plugin)
 			changeSignal:Fire()
 			return
 		end
+		local isLaneCount = name == "LanesOut" or name == "LanesIn"
+		if isLaneCount and RoadMath.hasLaneChange(selected.Segment) then
+			-- Just this end's lanes (a lane change). Only at an open end:
+			-- the end moves sideways, which would pull a joint apart.
+			if getPartnerEndpoint() then
+				return
+			end
+			beginRecording("Change Lanes")
+			local outName, inName = RoadMath.endLaneAttributeNames(selected.Segment, selected.Id)
+			local oldWidth = RoadMath.endpointWidth(selected)
+			model:SetAttribute(if name == "LanesOut" then outName else inName, value)
+			-- Keep both ends where they are through the width change...
+			local resized = RoadMath.getSegmentInfo(model)
+			if resized then
+				local solution = RoadMath.solveWidthChange(selected.Segment, resized.Width, resized.WidthRed);
+				(model :: any).Size = solution.Size
+				model:PivotTo(solution.Pivot)
+				-- ...then slide this end sideways so that the kerb on the
+				-- other direction's side stays exactly where it was
+				local settled = RoadMath.getSegmentInfo(model)
+				if settled then
+					local endpoint = RoadMath.getEndpoint(settled, selected.Id)
+					local shift = RoadMath.laneChangeShift(
+						endpoint,
+						name == "LanesOut",
+						RoadMath.endpointWidth(endpoint) - oldWidth
+					)
+					if shift.Magnitude > 1e-4 then
+						local ok, err = pcall(function()
+							applySolutionToRef(
+								{ Model = model, Id = selected.Id },
+								RoadMath.solveMove(settled, selected.Id, endpoint.WorldCFrame.Position + shift)
+							)
+						end)
+						if not ok then
+							warn("RoadHelper: Lane change failed: " .. tostring(err))
+						end
+					end
+				end
+			end
+			finishRecording()
+			updateDragger()
+			changeSignal:Fire()
+			return
+		end
+
 		beginRecording("Resize Road")
 		model:SetAttribute(sizingAttributeName(selected, name), value)
 		local resized = RoadMath.getSegmentInfo(model)
 		if resized then
-			local solution = RoadMath.solveWidthChange(selected.Segment, resized.Width);
+			local solution = RoadMath.solveWidthChange(selected.Segment, resized.Width, resized.WidthRed);
+			(model :: any).Size = solution.Size
+			model:PivotTo(solution.Pivot)
+		end
+		finishRecording()
+		updateDragger()
+		changeSignal:Fire()
+	end
+
+	-- Turn a straight's per-end lanes on or off ("Same at both ends"). Turning
+	-- it off gives the red end its own counts, starting from its current ones,
+	-- so nothing changes until an end is edited. Turning it on gives both ends
+	-- the selected end's lanes, keeping both ends where they are.
+	function session.SetSameLanesBothEnds(same: boolean)
+		local selected = getSelectedEndpoint()
+		if not selected or not RoadMath.supportsLaneChange(selected.Segment.Kind) then
+			return
+		end
+		local segment = selected.Segment
+		local model = segment.Model
+		if same == not RoadMath.hasLaneChange(segment) then
+			return
+		end
+		if not same then
+			beginRecording("Lane Change")
+			-- The red end is a forward end: out = forward, in = backward
+			local redOut, redIn = RoadMath.getLaneCounts(RoadMath.getEndpoint(segment, "Red"))
+			model:SetAttribute(RoadMath.RED_LANE_OVERRIDES[1], redOut)
+			model:SetAttribute(RoadMath.RED_LANE_OVERRIDES[2], redIn)
+			finishRecording()
+			changeSignal:Fire()
+			return
+		end
+		beginRecording("Same Lanes")
+		local lanesOut, lanesIn = RoadMath.getLaneCounts(selected)
+		clearLaneChange(model)
+		local outName, inName = RoadMath.laneAttributeNames(segment.Kind, selected.Id)
+		model:SetAttribute(outName, lanesOut)
+		model:SetAttribute(inName, lanesIn)
+		local resized = RoadMath.getSegmentInfo(model)
+		if resized then
+			local solution = RoadMath.solveWidthChange(segment, resized.Width, resized.WidthRed);
 			(model :: any).Size = solution.Size
 			model:PivotTo(solution.Pivot)
 		end

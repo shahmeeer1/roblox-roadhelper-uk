@@ -94,6 +94,15 @@ lazy-loads `src/main.lua` on first activation.
 - Lane boundaries sit every `LaneWidth` across the roadway; the boundary between the two
   directions gets the double centre line. Generator `lat` (lateral offset) is positive to the
   LEFT of forward travel, so driving on the left puts the forward lanes on the +lat side.
+- Lane changes (straights only): `LaneCountForwardRed`/`LaneCountBackwardRed` override the
+  red end's counts when both are >= 0 (the generator defaults them to -1, "same as blue").
+  The whole segment is the taper; `LaneChangeSide` ("Offside"/"Nearside") picks which lane
+  ends or starts. A straight's box is laid out around its wider end (`RoadMath.boxWidth`).
+  Editing one end's lanes shifts that end sideways by half the width change
+  (`RoadMath.laneChangeShift`) so the other direction's kerb stays put; the generator blends
+  lane positions by the path's sideways progress, so that kerb comes out straight. Single-end
+  edits are only allowed at open ends. SwapEnds moves swap lane counts too
+  (`RoadMath.swappedLaneValues`), since travel through the segment reverses.
 - StraightRoad endpoints (local): blue `(∓sway, -Y/2, -Z/2)` outward -Z, red `(±sway, +Y/2, +Z/2)`
   outward +Z, where `sway = max((X - width)/2, 0)` and the sign pair mirrors with `Flip`.
 - CurveRoad endpoints (local): blue `(-X/2 + width/2, ·, -Z/2)` outward -Z, red

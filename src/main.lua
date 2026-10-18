@@ -102,6 +102,11 @@ return function(plugin: Plugin, panel: DockWidgetPluginGui, buttonClicked: Signa
 						session.SetSizing(name, value)
 					end
 				end,
+				SetSameLanesBothEnds = function(same: boolean)
+					if session then
+						session.SetSameLanesBothEnds(same)
+					end
+				end,
 				AddSegment = function(kind: RoadMath.SegmentKind)
 					if session then
 						local preset = Presets.ByKey[activeSettings.SelectedPreset]

@@ -107,8 +107,9 @@ end
 	A straight can change lanes along its length: LaneCountForwardRed /
 	LaneCountBackwardRed then override the counts at its red end (the base
 	pair applies at the blue end). The overrides are only in effect when
-	both are present, and only on straights; with neither, the segment has
-	the same lanes at both ends. LaneChangeSide ("Offside" by default, or
+	both are set (>= 0; the generator defaults them to -1), and only on
+	straights; otherwise the segment has the same lanes at both ends.
+	LaneChangeSide ("Offside" by default, or
 	"Nearside") says which lane of a changing direction ends or starts.
 ]]
 function RoadMath.sanitizeLaneCounts(forward: number, backward: number): (number, number)
@@ -147,10 +148,16 @@ function RoadMath.supportsLaneChange(kind: SegmentKind): boolean
 	return kind == "Straight"
 end
 
+-- An override counts when it's a non-negative number: the generator declares
+-- them with -1 ("same as the blue end") as the default
+local function isOverride(value: any): boolean
+	return typeof(value) == "number" and value >= 0
+end
+
 local function redOverridesActive(kind: SegmentKind, model: Instance): boolean
 	return RoadMath.supportsLaneChange(kind)
-		and typeof(model:GetAttribute(RoadMath.RED_LANE_OVERRIDES[1])) == "number"
-		and typeof(model:GetAttribute(RoadMath.RED_LANE_OVERRIDES[2])) == "number"
+		and isOverride(model:GetAttribute(RoadMath.RED_LANE_OVERRIDES[1]))
+		and isOverride(model:GetAttribute(RoadMath.RED_LANE_OVERRIDES[2]))
 end
 
 -- Whether the segment has its own lane counts at the red end ("Same at both
@@ -498,7 +505,9 @@ function RoadMath.solveMove(segment: SegmentInfo, movedId: EndpointId, newWorldP
 	end
 
 	local swapEnds = false
-	if segment.Kind == "Straight" and delta.Y < 0 then
+	-- (A small tolerance keeps floating point noise on a flat road from
+	-- needlessly swapping its ends)
+	if segment.Kind == "Straight" and delta.Y < -1e-4 then
 		-- Straight roads always climb blue -> red. To pull this end below the
 		-- other one, rotate the segment 180 degrees about vertical so the ends
 		-- swap roles: the S-bend has 180-degree rotational symmetry, so the
@@ -521,7 +530,7 @@ function RoadMath.solveMove(segment: SegmentInfo, movedId: EndpointId, newWorldP
 		newFlip = delta.X < 0
 		newSize = Vector3.new(
 			width + math.abs(delta.X),
-			delta.Y,
+			math.max(delta.Y, 0),
 			math.max(delta.Z, RoadMath.MIN_LENGTH)
 		)
 	else
@@ -560,6 +569,27 @@ function RoadMath.swappedAdjustValues(get: (name: string) -> number): { [string]
 		AdjustRedDir = get("AdjustBlueDir"),
 		AdjustRedGrade = -get("AdjustBlueGrade"),
 		AdjustRedBank = -get("AdjustBlueBank"),
+	}
+end
+
+-- The lane count updates accompanying a SwapEnds solution: travel through the
+-- segment reverses, so forward and backward trade places, and a lane change's
+-- blue and red counts follow their geographic ends. (The lanes leaving and
+-- entering through each geographic end stay the same.)
+function RoadMath.swappedLaneValues(segment: SegmentInfo): { [string]: number }
+	local blueForward, blueBackward = readEndLaneCounts(segment.Kind, segment.Model, "Blue")
+	if RoadMath.hasLaneChange(segment) then
+		local redForward, redBackward = readEndLaneCounts(segment.Kind, segment.Model, "Red")
+		return {
+			LaneCountForward = redBackward,
+			LaneCountBackward = redForward,
+			[RoadMath.RED_LANE_OVERRIDES[1]] = blueBackward,
+			[RoadMath.RED_LANE_OVERRIDES[2]] = blueForward,
+		}
+	end
+	return {
+		LaneCountForward = blueBackward,
+		LaneCountBackward = blueForward,
 	}
 end
 
