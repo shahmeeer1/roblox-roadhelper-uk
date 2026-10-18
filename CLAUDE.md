@@ -146,6 +146,11 @@ lazy-loads `src/main.lua` on first activation.
   (`EntryKerbRadius`) join the arm's kerbs to the ring's, found exactly on the outline offset
   by ringWidth + radius; the ring's footway and outer edge line are cut across each mouth.
   Missing `Arms` means the 4-arm default in both RoadMath and the generator ("" is none).
+  Optional per-arm fields `,length,skew`: an own length (0 = `ArmLength`) and a skew off the
+  outline normal (degrees, clamped to +-45, positive clockwise from above); a skewed arm starts
+  at its mouth, where its axis crosses the ring's outer edge (`MouthX/Z`).
+  `SplitterStyle` "Kerbed" (default) or "Hatched" (painted only). The Roundabout add cone
+  builds a 4-arm roundabout whose `Arm3` joins the road end (arms carry the road's lanes).
   Removing an arm renumbers later ones, so joined roads are remapped, not re-seated by old id.
 - The Adjust dir/grade/bank rotations all pivot about the endpoint centre point, so endpoint
   *positions* are invariant under angle edits — only move edits Size/pivot.

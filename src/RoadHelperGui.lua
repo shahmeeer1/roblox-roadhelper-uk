@@ -969,6 +969,26 @@ local function RoundaboutPanel(props: {
 			end,
 		})
 	end
+	local splitterChips: { [string]: any } = {
+		ListLayout = e("UIListLayout", {
+			FillDirection = Enum.FillDirection.Horizontal,
+			HorizontalAlignment = Enum.HorizontalAlignment.Left,
+			SortOrder = Enum.SortOrder.LayoutOrder,
+		}),
+		Corner = e("UICorner", {
+			CornerRadius = UDim.new(0, 4),
+		}),
+	}
+	for index, style in { "Kerbed", "Hatched" } do
+		splitterChips[style] = e(ChipForToggle, {
+			Text = style,
+			IsCurrent = state.SplitterStyle == style,
+			LayoutOrder = index,
+			OnClick = function()
+				props.RoundaboutAction("SplitterStyle", style)
+			end,
+		})
+	end
 	local function halfButton(text: string, order: number, disabled: boolean, onClick: () -> ())
 		return e("Frame", {
 			Size = UDim2.new(0.5, -2, 0, 0),
@@ -1033,11 +1053,27 @@ local function RoundaboutPanel(props: {
 				-360,
 				"ArmAngle"
 			),
+			Length = numberField(
+				"Length",
+				"How far this arm runs out from the ring before its road end, in studs (the roundabout's Arm Length unless set here). Joined roads follow.",
+				4,
+				state.ArmOwnLength,
+				1,
+				"ArmOwnLength"
+			),
+			Skew = numberField(
+				"Approach Angle",
+				"Swing the arm off square to the island edge, in degrees (up to 45 either way; positive turns it clockwise seen from above). Joined roads follow.",
+				5,
+				state.ArmSkew,
+				-45,
+				"ArmSkew"
+			),
 			Remove = e("Frame", {
 				Size = UDim2.new(1, 0, 0, 0),
 				AutomaticSize = Enum.AutomaticSize.Y,
 				BackgroundTransparency = 1,
-				LayoutOrder = 4,
+				LayoutOrder = 6,
 			}, {
 				Button = e(OperationButton, {
 					Text = "Remove Arm",
@@ -1175,10 +1211,23 @@ local function RoundaboutPanel(props: {
 			0,
 			"SplitterWidth"
 		),
+		SplitterStyle = e(HelpGui.WithHelpIcon, {
+			Help = e(HelpGui.BasicTooltip, {
+				HelpRichText = "\u{2022} <b>Kerbed</b>: a raised splitter island, with hatching ahead of its nose."
+					.. "\n\u{2022} <b>Hatched</b>: painted hatching only, for tighter or rural junctions.",
+			}),
+			LayoutOrder = 11,
+			Subject = e("Frame", {
+				Size = UDim2.new(1, 0, 0, 0),
+				BorderSizePixel = 0,
+				BackgroundColor3 = Colors.ACTION_BLUE,
+				AutomaticSize = Enum.AutomaticSize.Y,
+			}, splitterChips),
+		}),
 		EntryKerbRadius = numberField(
 			"Kerb Radius",
 			"Radius of the kerbs curving from each arm into the ring, in studs.",
-			11,
+			12,
 			state.EntryKerbRadius,
 			1,
 			"EntryKerbRadius"

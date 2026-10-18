@@ -33,6 +33,8 @@ return function(t: TestTypes.TestContext)
 		t.expect(attributes.ArmLength).toBe(RoadDefaults.RoundaboutArmLength)
 		t.expect(attributes.SplitterWidth).toBe(RoadDefaults.RoundaboutSplitterWidth)
 		t.expect(attributes.EntryKerbRadius).toBe(RoadDefaults.RoundaboutEntryKerbRadius)
+		-- RoadMath reads anything but "Hatched" as kerbed
+		t.expect(attributes.SplitterStyle).toBe("Kerbed")
 		local island = RoadMath.parseIslandShape(attributes.IslandShape)
 		t.expect(#island).toBe(1)
 		t.expect(island[1].Radius).toBe(RoadDefaults.RoundaboutIslandRadius)

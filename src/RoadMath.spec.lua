@@ -1040,4 +1040,35 @@ return function(t: TestTypes.TestContext)
 		t.expect(roundabout.Size.X >= 2 * (228 + 0)).toBe(true)
 		t.expect(roundabout.Size.Z >= 2 * 228).toBe(true)
 	end)
+
+	t.test("roundabout arms: own lengths and skew", function()
+		local arms = RoadMath.parseArms("0,1,1,200,30;90,1,1,0,80")
+		t.expect(arms[1].Length).toBe(200)
+		t.expect(arms[1].Skew).toBe(30)
+		-- Skew is limited to 45 degrees either way
+		t.expect(arms[2].Skew).toBe(45)
+		-- Extra fields are only written when set
+		t.expect(RoadMath.serializeArms(arms)).toBe("0,1,1,200,30;90,1,1,0,45")
+		t.expect(RoadMath.serializeArms({ { Angle = 10, Exit = 1, Entry = 1, Length = 0, Skew = 0 } })).toBe("10,1,1")
+
+		local roundabout = makeRoundabout({
+			IslandShape = "0,0,60",
+			RingLanes = 2,
+			LaneWidth = 24,
+			SidewalkWidth = 8,
+			ArmLength = 120,
+			Arms = "0,1,1,200,30",
+		})
+		local arm = (roundabout.Roundabout :: any).Arms[1]
+		t.expect(arm.Length).toBe(200)
+		-- The arm leaves the island at (60, 0) swung 30 degrees off the +X
+		-- normal; its mouth is where that axis crosses the ring's outer edge
+		-- (48 across the ring, taken as straight)
+		local direction = Vector3.new(math.cos(math.rad(30)), 0, math.sin(math.rad(30)))
+		local mouth = Vector3.new(60, 0, 0) + direction * (48 / math.cos(math.rad(30)))
+		expectFuzzy(t, Vector3.new(arm.MouthX, 0, arm.MouthZ), mouth)
+		local ending = RoadMath.getEndpoint(roundabout, "Arm1")
+		expectFuzzy(t, ending.WorldCFrame.Position, mouth + direction * 200)
+		expectFuzzy(t, ending.WorldCFrame.LookVector, direction)
+	end)
 end

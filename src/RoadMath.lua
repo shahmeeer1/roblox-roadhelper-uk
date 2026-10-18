@@ -85,6 +85,9 @@ export type RoundaboutLayout = {
 	ArmLength: number,
 	SplitterWidth: number,
 	EntryKerbRadius: number,
+	-- "Kerbed" (a raised island, hatched ahead of its nose) or "Hatched"
+	-- (painted only)
+	SplitterStyle: "Kerbed" | "Hatched",
 }
 
 -- One of a roundabout's arms (see the Roundabouts section)
@@ -95,12 +98,20 @@ export type RoundaboutArm = {
 	-- Lanes leaving the roundabout, and lanes entering it
 	Exit: number,
 	Entry: number,
-	-- Where its axis meets the island outline, and the outline's outward
-	-- normal there (the arm's direction)
+	-- How far it runs out from the ring (its own LengthOverride, or the
+	-- roundabout's ArmLength when that's 0), and its skew in degrees
+	Length: number,
+	LengthOverride: number,
+	Skew: number,
+	-- Where its axis meets the island outline, and its direction (the
+	-- outline's outward normal there, swung by the skew)
 	AttachX: number,
 	AttachZ: number,
 	NX: number,
 	NZ: number,
+	-- Its mouth: where its axis crosses the ring's outer edge
+	MouthX: number,
+	MouthZ: number,
 	-- Its end (the road end that joins roads), and the width there
 	EndX: number,
 	EndZ: number,
@@ -452,7 +463,22 @@ end
 ]]
 local MAX_ARMS = 12
 
-function RoadMath.parseArms(value: any): { { Angle: number, Exit: number, Entry: number } }
+-- An arm as stored: "angle,exit,entry" plus optionally ",length,skew". A
+-- length of 0 uses the roundabout's ArmLength; skew (degrees, within
+-- MAX_ARM_SKEW either way) swings the arm off square to the island edge,
+-- clockwise seen from above for positive values.
+export type ArmSpec = {
+	Angle: number,
+	Exit: number,
+	Entry: number,
+	Length: number,
+	Skew: number,
+}
+
+local MAX_ARM_SKEW = 45
+RoadMath.MAX_ARM_SKEW = MAX_ARM_SKEW
+
+function RoadMath.parseArms(value: any): { ArmSpec }
 	local arms = {}
 	if typeof(value) == "string" then
 		for _, entry in string.split(value, ";") do
@@ -463,17 +489,30 @@ function RoadMath.parseArms(value: any): { { Angle: number, Exit: number, Entry:
 				if exit + entryLanes < 1 then
 					exit, entryLanes = 1, 1
 				end
-				table.insert(arms, { Angle = angle, Exit = exit, Entry = entryLanes })
+				table.insert(arms, {
+					Angle = angle,
+					Exit = exit,
+					Entry = entryLanes,
+					Length = math.max(tonumber(parts[4]) or 0, 0),
+					Skew = math.clamp(tonumber(parts[5]) or 0, -MAX_ARM_SKEW, MAX_ARM_SKEW),
+				})
 			end
 		end
 	end
 	return arms
 end
 
-function RoadMath.serializeArms(arms: { { Angle: number, Exit: number, Entry: number } }): string
+function RoadMath.serializeArms(arms: { ArmSpec }): string
 	local entries = {}
+	local function tidy(value: number): string
+		return tostring(math.round(value * 100) / 100)
+	end
 	for _, arm in arms do
-		table.insert(entries, `{math.round(arm.Angle * 100) / 100},{arm.Exit},{arm.Entry}`)
+		local entry = `{tidy(arm.Angle)},{arm.Exit},{arm.Entry}`
+		if (arm.Length or 0) ~= 0 or (arm.Skew or 0) ~= 0 then
+			entry ..= `,{tidy(arm.Length or 0)},{tidy(arm.Skew or 0)}`
+		end
+		table.insert(entries, entry)
 	end
 	return table.concat(entries, ";")
 end
@@ -559,23 +598,36 @@ function RoadMath.roundaboutLayout(model: Instance): RoundaboutLayout
 		armsValue = RoadDefaults.RoundaboutArms
 	end
 	for _, arm in RoadMath.parseArms(armsValue) do
-		local px, pz, nx, nz = RoadMath.outlineHit(stations, cx, cz, math.rad(arm.Angle))
+		local px, pz, normalX, normalZ = RoadMath.outlineHit(stations, cx, cz, math.rad(arm.Angle))
+		-- The arm's direction: the outline normal, swung by its skew
+		local skew = math.rad(arm.Skew)
+		local nx = normalX * math.cos(skew) - normalZ * math.sin(skew)
+		local nz = normalX * math.sin(skew) + normalZ * math.cos(skew)
 		-- Looking out along the arm, +T is the left
 		local tx, tz = nz, -nx
+		-- Its mouth: where its axis crosses the ring's outer edge (taking the
+		-- outline as straight across the ring's width)
+		local toMouth = ringWidth / math.cos(skew)
+		local mouthX, mouthZ = px + nx * toMouth, pz + nz * toMouth
 		-- The end is centred on its roadway: the exit lanes one side of the
 		-- arm's axis, the entry lanes the other
 		local centre = exitSide * (arm.Exit - arm.Entry) * laneWidth / 2
-		local reach = ringWidth + armLength
+		local length = if arm.Length > 0 then arm.Length else armLength
 		table.insert(arms, {
 			Angle = arm.Angle,
 			Exit = arm.Exit,
 			Entry = arm.Entry,
+			Length = length,
+			LengthOverride = arm.Length,
+			Skew = arm.Skew,
 			AttachX = px,
 			AttachZ = pz,
 			NX = nx,
 			NZ = nz,
-			EndX = px + nx * reach + tx * centre,
-			EndZ = pz + nz * reach + tz * centre,
+			MouthX = mouthX,
+			MouthZ = mouthZ,
+			EndX = mouthX + nx * length + tx * centre,
+			EndZ = mouthZ + nz * length + tz * centre,
 			EndWidth = (arm.Exit + arm.Entry) * laneWidth + 2 * sidewalkWidth,
 		})
 	end
@@ -594,6 +646,7 @@ function RoadMath.roundaboutLayout(model: Instance): RoundaboutLayout
 		Arms = arms,
 		ArmLength = armLength,
 		SplitterWidth = math.max(getNumberAttribute(model, "SplitterWidth", RoadDefaults.RoundaboutSplitterWidth), 0),
+		SplitterStyle = if model:GetAttribute("SplitterStyle") == "Hatched" then "Hatched" else "Kerbed",
 		EntryKerbRadius = math.max(
 			getNumberAttribute(model, "EntryKerbRadius", RoadDefaults.RoundaboutEntryKerbRadius),
 			sidewalkWidth + 2
@@ -1344,7 +1397,7 @@ end
 -- New segment placement
 --------------------------------------------------------------------------------
 
-export type TurnDirection = "Left" | "Straight" | "Right" | "Intersection" | "Split"
+export type TurnDirection = "Left" | "Straight" | "Right" | "Intersection" | "Split" | "Roundabout"
 
 -- Plan-view angle of a direction vector, matching the clockwise-positive
 -- convention: angle(v) increases when v is rotated by CFrame.Angles(0, a, 0)

@@ -1,7 +1,7 @@
 --[[
 	AddHandles: Clickable markers hovering in front of an open selected
 	endpoint: add a left turn, straight, or right turn segment extending the
-	road, or (off road ends) a Y split or an intersection. Clicking adds a
+	road, or (off road ends) a Y split, an intersection or a roundabout. Clicking adds a
 	default-size segment; click-dragging places the new segment's far
 	endpoint following the cursor on the XZ plane (or moves a new junction).
 ]]
@@ -23,61 +23,29 @@ local STRAIGHT_COLOR = Color3.fromRGB(240, 240, 240)
 local TURN_COLOR = Color3.fromRGB(255, 200, 60)
 local INTERSECTION_COLOR = Color3.fromRGB(120, 190, 255)
 local SPLIT_COLOR = Color3.fromRGB(130, 225, 150)
+local ROUNDABOUT_COLOR = Color3.fromRGB(225, 150, 255)
 
--- Sideways placement in each layout: AsideFull with all five handles,
--- Aside without the Y split (a one-lane road can't split), AsideCompact the
--- centred three-handle layout on junction exits (no junction extensions)
+-- The handles in the order they sit across the end, left to right. The ones
+-- offered at an end are spaced evenly in that order: junction exits don't
+-- offer the junction extensions, and a one-lane road can't split.
 local AddHandleDefinitions: {
-	[string]: {
+	{
+		Id: string,
 		Turn: RoadMath.TurnDirection,
 		Ahead: number,
-		AsideFull: number,
-		Aside: number,
-		AsideCompact: number,
 		Color: Color3,
-	},
+		Junction: boolean,
+	}
 } = {
-	AddLeft = {
-		Turn = "Left",
-		Ahead = AHEAD * 0.75,
-		AsideFull = -ASIDE * 1.8,
-		Aside = -ASIDE * 1.4,
-		AsideCompact = -ASIDE,
-		Color = TURN_COLOR,
-	},
-	AddStraight = {
-		Turn = "Straight",
-		Ahead = AHEAD,
-		AsideFull = -ASIDE * 0.9,
-		Aside = -ASIDE * 0.45,
-		AsideCompact = 0,
-		Color = STRAIGHT_COLOR,
-	},
-	AddSplit = {
-		Turn = "Split",
-		Ahead = AHEAD * 1.1,
-		AsideFull = 0,
-		Aside = 0,
-		AsideCompact = 0,
-		Color = SPLIT_COLOR,
-	},
-	AddIntersection = {
-		Turn = "Intersection",
-		Ahead = AHEAD,
-		AsideFull = ASIDE * 0.9,
-		Aside = ASIDE * 0.45,
-		AsideCompact = 0,
-		Color = INTERSECTION_COLOR,
-	},
-	AddRight = {
-		Turn = "Right",
-		Ahead = AHEAD * 0.75,
-		AsideFull = ASIDE * 1.8,
-		Aside = ASIDE * 1.4,
-		AsideCompact = ASIDE,
-		Color = TURN_COLOR,
-	},
+	{ Id = "AddLeft", Turn = "Left", Ahead = AHEAD * 0.75, Color = TURN_COLOR, Junction = false },
+	{ Id = "AddStraight", Turn = "Straight", Ahead = AHEAD, Color = STRAIGHT_COLOR, Junction = false },
+	{ Id = "AddSplit", Turn = "Split", Ahead = AHEAD * 1.1, Color = SPLIT_COLOR, Junction = true },
+	{ Id = "AddIntersection", Turn = "Intersection", Ahead = AHEAD, Color = INTERSECTION_COLOR, Junction = true },
+	{ Id = "AddRoundabout", Turn = "Roundabout", Ahead = AHEAD * 1.1, Color = ROUNDABOUT_COLOR, Junction = true },
+	{ Id = "AddRight", Turn = "Right", Ahead = AHEAD * 0.75, Color = TURN_COLOR, Junction = false },
 }
+-- Sideways spacing between neighbouring handles
+local SPACING = ASIDE * 0.9
 
 local AddHandles = {}
 AddHandles.__index = AddHandles
@@ -129,14 +97,19 @@ function AddHandles:update(draggerToolModel, selectionInfo)
 	local compact = RoadMath.isJunction(endpoint.Segment.Kind)
 	local lanesOut, lanesIn = RoadMath.getLaneCounts(endpoint)
 	local offerSplit = not compact and lanesOut + lanesIn >= 2
-	for handleId, def in AddHandleDefinitions do
-		if compact and (def.Turn == "Intersection" or def.Turn == "Split") then
+	local offered = {}
+	for _, def in AddHandleDefinitions do
+		if def.Junction and compact then
 			continue
 		end
 		if def.Turn == "Split" and not offerSplit then
 			continue
 		end
-		local sideways = if compact then def.AsideCompact elseif offerSplit then def.AsideFull else def.Aside
+		table.insert(offered, def)
+	end
+	for index, def in offered do
+		local handleId = def.Id
+		local sideways = (index - (#offered + 1) / 2) * SPACING
 		local position = frame.Position
 			+ outward * (def.Ahead * scale)
 			+ right * (sideways * scale)
@@ -180,6 +153,22 @@ function AddHandles:render(hoveredHandleId)
 	for handleId, handle in self._handles do
 		local hovered = handleId == hoveredHandleId or handleId == self._draggingHandleId
 		local size = MARKER_SIZE * handle.Scale * (if hovered then 1.25 else 1)
+		if handle.Turn == "Roundabout" then
+			-- A flat ring
+			-- (A cylinder adornment's axis is its Z: lay it flat)
+			children[handleId] = Roact.createElement("CylinderHandleAdornment", {
+				Adornee = workspace.Terrain,
+				CFrame = CFrame.new(handle.Position) * CFrame.Angles(math.rad(90), 0, 0),
+				Height = size * 0.3,
+				Radius = size * 0.85,
+				InnerRadius = size * 0.45,
+				Color3 = handle.Color,
+				Transparency = if hovered then 0 else 0.25,
+				AlwaysOnTop = false,
+				ZIndex = 0,
+			})
+			continue
+		end
 		if handle.Turn == "Split" then
 			-- A flat "Y": a stem bar and two arms angling out ahead
 			local thickness = size * 0.3

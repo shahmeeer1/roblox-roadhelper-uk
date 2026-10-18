@@ -98,6 +98,9 @@ export type SelectionState = {
 	ArmExit: number?,
 	ArmEntry: number?,
 	ArmAngle: number?,
+	ArmOwnLength: number?,
+	ArmSkew: number?,
+	SplitterStyle: string?,
 	LaneWidth: number,
 	SidewalkWidth: number,
 	IntersectionAngle: number,
@@ -1151,6 +1154,54 @@ local function createRoadSession(plugin: Plugin)
 		return newModel
 	end
 
+	-- The roundabout arm a roundabout added off a road end joins it by: arm 3
+	-- of the default four, pointing back down the road
+	local JOINED_ROUNDABOUT_ARM: RoadMath.EndpointId = "Arm3"
+
+	-- Create a new roundabout joined to an open road end: a round island
+	-- with four arms, the back one (JOINED_ROUNDABOUT_ARM) mating the end's
+	-- actual face. Every arm carries the road's lanes: the lanes heading out
+	-- of the road through its end enter the roundabout, and vice versa.
+	local function createJoinedRoundabout(openEnd: RoadMath.Endpoint): Model?
+		local sourceModel = openEnd.Segment.Model
+		local template = findTemplate("Roundabout", openEnd.WorldCFrame.Position)
+		local newModel: Model?
+		if template then
+			newModel = template.Model:Clone()
+			-- Keep the cloned geometry (see createJoinedIntersection)
+		else
+			newModel = createFallbackSegmentModel("Roundabout")
+		end
+		if not newModel then
+			warn("RoadHelper: No Roundabout available to use as a template.")
+			return nil
+		end
+		for name, value in sourceModel:GetAttributes() do
+			if not GEOMETRY_ATTRIBUTES[name] then
+				newModel:SetAttribute(name, value)
+			end
+		end
+		local lanesOut, lanesIn = RoadMath.getLaneCounts(openEnd)
+		local arm = `{lanesIn},{lanesOut}`
+		newModel:SetAttribute("Arms", `0,{arm};90,{arm};180,{arm};270,{arm}`)
+		newModel:SetAttribute("IslandShape", `0,0,{RoadDefaults.RoundaboutIslandRadius}`)
+		newModel:SetAttribute("RingLanes", RoadDefaults.RoundaboutRingLanes)
+		local layout = RoadMath.roundaboutLayout(newModel);
+		(newModel :: any).Size = RoadMath.roundaboutSize(layout)
+
+		-- Turn it so the joining arm faces back along the road: its local
+		-- direction maps onto the opposite of the road end's actual face
+		local joined = assert(layout.Arms[assert(RoadMath.armIndex(JOINED_ROUNDABOUT_ARM))])
+		local outward = RoadMath.actualOutwardDirection(openEnd)
+		local armYaw = math.atan2(-joined.NZ, joined.NX)
+		local faceYaw = math.atan2(outward.Z, -outward.X)
+		local rotation = CFrame.Angles(0, faceYaw - armYaw, 0)
+		local endLocal = Vector3.new(joined.EndX, 0, joined.EndZ)
+		newModel:PivotTo(rotation + (openEnd.WorldCFrame.Position - rotation:VectorToWorldSpace(endLocal)))
+		newModel.Parent = sourceModel.Parent
+		return newModel
+	end
+
 	-- Add-drag state (from AddHandles)
 	local addDragRef: EndpointRef? = nil
 	local addSourceRef: EndpointRef? = nil
@@ -1173,10 +1224,19 @@ local function createRoadSession(plugin: Plugin)
 		end
 		gestureActive = true
 		addBeforeSelection = snapshotSelection()
-		if turn == "Intersection" or turn == "Split" then
-			local isSplit = turn == "Split"
-			beginRecording(if isSplit then "Add Split" else "Add Intersection")
-			local newModel = if isSplit then createJoinedSplit(selected) else createJoinedIntersection(selected)
+		if turn == "Intersection" or turn == "Split" or turn == "Roundabout" then
+			-- Each junction: how to make it, the end it joins by, and the end
+			-- across from that to select, ready to keep extending
+			local create, joinId, selectId, recordingName
+			if turn == "Split" then
+				create, joinId, selectId, recordingName = createJoinedSplit, "Stem", "BranchLeft", "Add Split"
+			elseif turn == "Roundabout" then
+				create, joinId, selectId, recordingName = createJoinedRoundabout, JOINED_ROUNDABOUT_ARM, "Arm1", "Add Roundabout"
+			else
+				create, joinId, selectId, recordingName = createJoinedIntersection, "ZMinus", "ZPlus", "Add Intersection"
+			end
+			beginRecording(recordingName)
+			local newModel = create(selected)
 			if not newModel then
 				finishRecording()
 				gestureActive = false
@@ -1186,10 +1246,9 @@ local function createRoadSession(plugin: Plugin)
 				Model = newModel,
 				StartPivot = newModel:GetPivot(),
 				SourceRef = { Model = selected.Segment.Model, Id = selected.Id },
-				JoinId = if isSplit then "Stem" else "ZMinus",
+				JoinId = joinId,
 			}
-			-- Select an exit across from the join, ready to keep extending
-			selectedRef = { Model = newModel, Id = if isSplit then "BranchLeft" else "ZPlus" }
+			selectedRef = { Model = newModel, Id = selectId }
 			changeSignal:Fire()
 			return selected.WorldCFrame.Position.Y
 		end
@@ -1609,10 +1668,16 @@ local function createRoadSession(plugin: Plugin)
 	end
 
 	-- The arms as attribute data, for editing
-	local function armSpecs(layout: RoadMath.RoundaboutLayout): { { Angle: number, Exit: number, Entry: number } }
+	local function armSpecs(layout: RoadMath.RoundaboutLayout): { RoadMath.ArmSpec }
 		local specs = {}
 		for _, arm in layout.Arms do
-			table.insert(specs, { Angle = arm.Angle, Exit = arm.Exit, Entry = arm.Entry })
+			table.insert(specs, {
+				Angle = arm.Angle,
+				Exit = arm.Exit,
+				Entry = arm.Entry,
+				Length = arm.LengthOverride,
+				Skew = arm.Skew,
+			})
 		end
 		return specs
 	end
@@ -1721,7 +1786,7 @@ local function createRoadSession(plugin: Plugin)
 					end
 				end
 			end
-			table.insert(specs, { Angle = angle, Exit = 1, Entry = 1 })
+			table.insert(specs, { Angle = angle, Exit = 1, Entry = 1, Length = 0, Skew = 0 })
 			model:SetAttribute("Arms", RoadMath.serializeArms(specs))
 			fitRoundaboutSize(model)
 			-- Select the new arm
@@ -1759,6 +1824,18 @@ local function createRoadSession(plugin: Plugin)
 			specs[armIndex].Angle = value % 360
 			model:SetAttribute("Arms", RoadMath.serializeArms(specs))
 			fitRoundaboutSize(model)
+		elseif action == "ArmOwnLength" and armIndex then
+			-- This arm's own length (the roundabout's when it matches)
+			local length = math.max(value, 1)
+			specs[armIndex].Length = if math.abs(length - layout.ArmLength) < 1e-3 then 0 else length
+			model:SetAttribute("Arms", RoadMath.serializeArms(specs))
+			fitRoundaboutSize(model)
+		elseif action == "ArmSkew" and armIndex then
+			specs[armIndex].Skew = math.clamp(value, -RoadMath.MAX_ARM_SKEW, RoadMath.MAX_ARM_SKEW)
+			model:SetAttribute("Arms", RoadMath.serializeArms(specs))
+			fitRoundaboutSize(model)
+		elseif action == "SplitterStyle" then
+			model:SetAttribute("SplitterStyle", if value == "Hatched" then "Hatched" else "Kerbed")
 		elseif action == "ArmLength" or action == "SplitterWidth" or action == "EntryKerbRadius" then
 			model:SetAttribute(action, math.max(value, if action == "ArmLength" then 1 else 0))
 			fitRoundaboutSize(model)
@@ -2000,9 +2077,7 @@ local function createRoadSession(plugin: Plugin)
 					Arm = armIndex,
 					ArmAngle = if arm then arm.Angle else nil,
 					-- The arm's mouth: where its axis meets the ring's outer edge
-					ArmKnob = if arm
-						then Vector3.new(arm.AttachX + arm.NX * layout.RingWidth, 0, arm.AttachZ + arm.NZ * layout.RingWidth)
-						else nil,
+					ArmKnob = if arm then Vector3.new(arm.MouthX, 0, arm.MouthZ) else nil,
 				}
 			end,
 			MoveArm = moveArm,
@@ -2216,6 +2291,9 @@ local function createRoadSession(plugin: Plugin)
 			ArmExit = if roundabout and roundaboutArm then roundabout.Arms[roundaboutArm].Exit else nil,
 			ArmEntry = if roundabout and roundaboutArm then roundabout.Arms[roundaboutArm].Entry else nil,
 			ArmAngle = if roundabout and roundaboutArm then roundabout.Arms[roundaboutArm].Angle else nil,
+			ArmOwnLength = if roundabout and roundaboutArm then roundabout.Arms[roundaboutArm].Length else nil,
+			ArmSkew = if roundabout and roundaboutArm then roundabout.Arms[roundaboutArm].Skew else nil,
+			SplitterStyle = if roundabout then roundabout.SplitterStyle else nil,
 			LaneWidth = (selected.Segment.Model:GetAttribute("LaneWidth" .. laneAxisSuffix) :: number?) or RoadDefaults.LaneWidth,
 			SidewalkWidth = (selected.Segment.Model:GetAttribute("SidewalkWidth") :: number?) or RoadDefaults.SidewalkWidth,
 			IntersectionAngle = (selected.Segment.Model:GetAttribute("IntersectionAngle") :: number?) or RoadDefaults.IntersectionAngle,
@@ -2660,8 +2738,8 @@ local function createRoadSession(plugin: Plugin)
 	-- Panel actions on the selected roundabout: "Shape" (a preset name),
 	-- "AddCorner", "RemoveCorner", "CornerRadius", "RingLanes", "LaneWidth",
 	-- "SidewalkWidth", "ApronWidth", "AddArm", "ArmLength", "SplitterWidth",
-	-- "EntryKerbRadius", and on the selected arm "RemoveArm", "ArmExit",
-	-- "ArmEntry", "ArmAngle"
+	-- "EntryKerbRadius", "SplitterStyle", and on the selected arm
+	-- "RemoveArm", "ArmExit", "ArmEntry", "ArmAngle", "ArmOwnLength", "ArmSkew"
 	session.RoundaboutAction = roundaboutAction
 
 	function session.Destroy()

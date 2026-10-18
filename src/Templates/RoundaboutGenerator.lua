@@ -22,13 +22,18 @@ local defaultAttributes = {
 	-- The circulating carriageway: lanes, and each lane's width
 	RingLanes = 2,
 	LaneWidth = 24,
-	-- The arms, "angle,exit,entry;...": the direction from the island's
-	-- centroid in degrees (atan2(z, x)), lanes leaving and lanes entering
+	-- The arms, "angle,exit,entry[,length,skew];...": the direction from the
+	-- island's centroid in degrees (atan2(z, x)), lanes leaving and lanes
+	-- entering, and optionally the arm's own length (0 for ArmLength) and
+	-- skew off square to the island edge (degrees, up to 45 either way)
 	Arms = "0,1,1;90,1,1;180,1,1;270,1,1",
 	-- How far the arms run out from the ring, the splitter island between
-	-- each arm's entry and exit lanes, and the kerb radius into the ring
+	-- each arm's entry and exit lanes and its style ("Kerbed": raised, with
+	-- hatching ahead of its nose; "Hatched": painted only), and the kerb
+	-- radius into the ring
 	ArmLength = 120,
 	SplitterWidth = 16,
+	SplitterStyle = "Kerbed",
 	EntryKerbRadius = 24,
 	-- The footway around the outside
 	SidewalkWidth = 8,
@@ -64,6 +69,7 @@ local SMOOTH = Enum.SurfaceType.Smooth
 
 local MAX_CORNERS = 12
 local MAX_ARMS = 12
+local MAX_ARM_SKEW = 45
 local DEFAULT_RADIUS = 60
 -- Outline sampling: at most this much turn between stations
 local ARC_STEP = math.rad(6)
@@ -147,7 +153,13 @@ local function parseArms(value)
 				if exit + entryLanes < 1 then
 					exit, entryLanes = 1, 1
 				end
-				table.insert(arms, { Angle = angle, Exit = exit, Entry = entryLanes })
+				table.insert(arms, {
+					Angle = angle,
+					Exit = exit,
+					Entry = entryLanes,
+					Length = math.max(tonumber(parts[4]) or 0, 0),
+					Skew = math.clamp(tonumber(parts[5]) or 0, -MAX_ARM_SKEW, MAX_ARM_SKEW),
+				})
 			end
 		end
 	end
@@ -308,7 +320,7 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 		local apronWidth = math.clamp(attributes.ApronWidth or 0, 0, math.max(smallest - 1, 0))
 		local exitSide = if attributes.DriveSide == "Right" then -1 else 1
 		local armLength = math.max(attributes.ArmLength or 120, 1)
-		local taperLength = armLength * TAPER_FRACTION
+		local hatchedSplitters = attributes.SplitterStyle == "Hatched"
 		local kerbRadius = math.max(attributes.EntryKerbRadius or 24, sidewalkWidth + 2)
 
 		local stations = {}
@@ -415,7 +427,15 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 		local arms = {}
 		-- (No attribute at all means the default arms; "" is none)
 		for _, spec in parseArms(if attributes.Arms == nil then defaultAttributes.Arms else attributes.Arms) do
-			local px, pz, nx, nz = outlineHit(stations, cx, cz, math.rad(spec.Angle))
+			local px, pz, normalX, normalZ = outlineHit(stations, cx, cz, math.rad(spec.Angle))
+			-- The arm's direction: the outline normal swung by its skew; it
+			-- starts at its mouth, where that axis crosses the ring's outer
+			-- edge (identical to RoadMath.roundaboutLayout)
+			local skew = math.rad(spec.Skew)
+			local nx = normalX * math.cos(skew) - normalZ * math.sin(skew)
+			local nz = normalX * math.sin(skew) + normalZ * math.cos(skew)
+			local toMouth = ringWidth / math.cos(skew)
+			local length = if spec.Length > 0 then spec.Length else armLength
 			local arm = {
 				Exit = spec.Exit,
 				Entry = spec.Entry,
@@ -423,8 +443,10 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 				NZ = nz,
 				TX = nz,
 				TZ = -nx,
-				AX = px + nx * ringWidth,
-				AZ = pz + nz * ringWidth,
+				AX = px + nx * toMouth,
+				AZ = pz + nz * toMouth,
+				Length = length,
+				Taper = length * TAPER_FRACTION,
 			}
 			-- A splitter island only separates two directions
 			arm.Splitter = if spec.Exit > 0 and spec.Entry > 0 then math.max(attributes.SplitterWidth or 16, 0) else 0
@@ -443,7 +465,7 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 			return Vector3.new(arm.AX + arm.NX * a + arm.TX * lat, bottom + h, arm.AZ + arm.NZ * a + arm.TZ * lat)
 		end
 		local function gapAt(arm, a)
-			return arm.Splitter * (1 - smoothstep(math.clamp(a / taperLength, 0, 1)))
+			return arm.Splitter * (1 - smoothstep(math.clamp(a / arm.Taper, 0, 1)))
 		end
 		-- The roadway's outer edge on one side (signed lat) at a
 		local function outerAt(arm, side, a)
@@ -584,8 +606,8 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 			-- Where the kerbed splitter island ends (its nose): where the
 			-- gap narrows to NOSE_WIDTH
 			local noseA = 0
-			if arm.Splitter > NOSE_WIDTH then
-				local lo, hi = 0, taperLength
+			if arm.Splitter > NOSE_WIDTH and not hatchedSplitters then
+				local lo, hi = 0, arm.Taper
 				for _ = 1, 30 do
 					local mid = (lo + hi) / 2
 					if gapAt(arm, mid) > NOSE_WIDTH then
@@ -601,17 +623,17 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 			-- Slices along the arm, including where the footways start
 			local slices = {}
 			for k = 0, ARM_SLICES do
-				table.insert(slices, armLength * k / ARM_SLICES)
+				table.insert(slices, arm.Length * k / ARM_SLICES)
 			end
 			for _, extra in { ISLAND_START, noseA } do
-				if extra > 0 and extra < armLength then
+				if extra > 0 and extra < arm.Length then
 					table.insert(slices, extra)
 				end
 			end
 			local footwayStart = {}
 			for _, side in { 1, -1 } do
 				local fillet = arm.Fillets[side]
-				footwayStart[side] = if fillet then math.min(fillet.Axial, armLength) else 0
+				footwayStart[side] = if fillet then math.min(fillet.Axial, arm.Length) else 0
 				table.insert(slices, footwayStart[side])
 			end
 			table.sort(slices)
@@ -778,7 +800,7 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 					-- ring's outer edge line
 					armLine(function(a)
 						return outerAt(arm, side, a) - side * EDGE_INSET
-					end, arm.FootwayStart[side], armLength, laneColor, false)
+					end, arm.FootwayStart[side], arm.Length, laneColor, false)
 					local fillet = arm.Fillets[side]
 					if fillet then
 						local c = fillet.Centre
@@ -796,7 +818,7 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 					for k = 1, lanes - 1 do
 						armLine(function(a)
 							return side * (gapAt(arm, a) / 2 + k * laneWidth)
-						end, 0, armLength, laneColor, true)
+						end, 0, arm.Length, laneColor, true)
 					end
 				end
 				if arm.Splitter > 0 then
@@ -805,7 +827,7 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 					for _, side in { 1, -1 } do
 						armLine(function(a)
 							return side * (gapAt(arm, a) / 2 + CENTER_OFFSET)
-						end, 0, armLength, centreColor, false)
+						end, 0, arm.Length, centreColor, false)
 					end
 					-- Diagonal hatching between them ahead of the island's
 					-- nose, while there's room
@@ -814,7 +836,7 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 						return side * (gapAt(arm, a) / 2 + CENTER_OFFSET) - side * (MARK_WIDTH / 2 + HATCH_WIDTH / 2)
 					end
 					local a = math.max(arm.NoseA, ISLAND_START) + HATCH_SPACING / 2
-					while a < taperLength and gapAt(arm, a) / 2 + CENTER_OFFSET - inset > HATCH_WIDTH / 2 do
+					while a < arm.Taper and gapAt(arm, a) / 2 + CENTER_OFFSET - inset > HATCH_WIDTH / 2 do
 						-- A stripe at 45 degrees through (a, 0), meeting each
 						-- border's inner face
 						local function meet(side)
@@ -832,7 +854,7 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 					for _, side in { 1, -1 } do
 						armLine(function()
 							return side * CENTER_OFFSET
-						end, 0, armLength, centreColor, false)
+						end, 0, arm.Length, centreColor, false)
 					end
 				end
 				-- Give way to traffic on the roundabout: a broken line across
@@ -878,7 +900,7 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 				local centre = exitSide * (arm.Exit - arm.Entry) * laneWidth / 2
 				local half = (arm.Exit + arm.Entry) * laneWidth / 2 + sidewalkWidth
 				for _, sgn in { -1, 1 } do
-					local p = armPoint(arm, armLength - 2, centre + sgn * half, 2)
+					local p = armPoint(arm, arm.Length - 2, centre + sgn * half, 2)
 					local cube = createPart("SnappingHelper", Color3.fromRGB(255, 40, 40), Enum.Material.SmoothPlastic,
 						Vector3.new(4, 4, 4), CFrame.new(p))
 					cube.CanCollide = false

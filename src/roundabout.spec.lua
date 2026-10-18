@@ -57,11 +57,13 @@ return function(t: TestTypes.TestContext)
 		local round = table.clone(base)
 		round.IslandShape = "0,0,60"
 		round.Arms = "0,1,1;90,1,1;180,1,1;270,1,1"
+		round.SplitterStyle = "Hatched"
 		local rectangle = table.clone(base)
 		rectangle.IslandShape = "-90,-40,20;90,-40,20;90,40,20;-90,40,20"
 		rectangle.ApronWidth = 12
-		-- An uneven mix: a two-lane approach, an exit-only arm, a skewed arm
-		rectangle.Arms = "0,1,2;100,1,1;200,1,0;300,2,1"
+		-- An uneven mix: a two-lane approach, an exit-only arm, an arm off at
+		-- an odd angle, and a longer arm skewed 25 degrees
+		rectangle.Arms = "0,1,2;100,1,1;200,1,0;300,2,1,180,25"
 		local models = {
 			buildRoundabout(round, CFrame.new(origin + Vector3.new(-200, 0, 0))),
 			buildRoundabout(rectangle, CFrame.new(origin + Vector3.new(220, 0, 0))),
