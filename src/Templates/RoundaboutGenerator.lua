@@ -1,7 +1,8 @@
 --!optimize 2
 --!native
 -- RoadHelper's roundabout generator. The island outline (the convex hull of
--- circles) must match RoadMath's Roundabouts section exactly.
+-- circles) and the arms' placement must match RoadMath's Roundabouts section
+-- exactly.
 
 type GenerationFunctionParams<Attributes> = {
 	Attributes: Attributes,
@@ -21,6 +22,14 @@ local defaultAttributes = {
 	-- The circulating carriageway: lanes, and each lane's width
 	RingLanes = 2,
 	LaneWidth = 24,
+	-- The arms, "angle,exit,entry;...": the direction from the island's
+	-- centroid in degrees (atan2(z, x)), lanes leaving and lanes entering
+	Arms = "0,1,1;90,1,1;180,1,1;270,1,1",
+	-- How far the arms run out from the ring, the splitter island between
+	-- each arm's entry and exit lanes, and the kerb radius into the ring
+	ArmLength = 120,
+	SplitterWidth = 16,
+	EntryKerbRadius = 24,
 	-- The footway around the outside
 	SidewalkWidth = 8,
 	-- A raised apron inside the ring that long vehicles can run over (0 for
@@ -35,11 +44,13 @@ local defaultAttributes = {
 	BlendColor = Color3.fromRGB(66, 102, 12),
 	BlendMaterial = Enum.Material.Grass,
 	BlendAngle = 30,
+	AdjustShowSnappingHelper = false,
 	TextureLaneMarkings = false,
 	HaveLaneMarkings = true,
 	-- "Left" (UK) or "Right": which side traffic keeps to
 	DriveSide = "Left",
 	RoadMaterial = Enum.Material.Concrete,
+	CenterlineColor = Color3.fromRGB(244, 205, 47),
 	LaneMarkingColor = Color3.fromRGB(163, 161, 165),
 	RoadColor = Color3.fromRGB(26, 42, 52),
 	SidewalkColor = Color3.fromRGB(163, 162, 165),
@@ -52,6 +63,7 @@ local SAND = Enum.Material.Sand
 local SMOOTH = Enum.SurfaceType.Smooth
 
 local MAX_CORNERS = 12
+local MAX_ARMS = 12
 local DEFAULT_RADIUS = 60
 -- Outline sampling: at most this much turn between stations
 local ARC_STEP = math.rad(6)
@@ -63,10 +75,27 @@ local CURB_HEIGHT = 1
 local APRON_RISE = 0.4
 local MARK_WIDTH = 0.8
 local MARK_THICKNESS = 0.04
+local CENTER_OFFSET = 1
 local EDGE_INSET = 2.6
 
 local BLEND_LENGTH = 12
 local BLEND_THICKNESS = 1
+
+-- Arms: slices along each arm, how much of its length the splitter island
+-- tapers over, the give way line's setback from the ring, where the kerbed
+-- island starts and how wide the gap must be for it (its nose), and the
+-- hatching ahead of it
+local ARM_SLICES = 16
+local TAPER_FRACTION = 0.6
+local GIVE_WAY_SETBACK = 1.5
+local GIVE_WAY_WIDTH = 2
+local GIVE_WAY_DASH = 4
+local GIVE_WAY_GAP = 2
+local ISLAND_START = 4
+local NOSE_WIDTH = 6
+local HATCH_WIDTH = 2
+local HATCH_SPACING = 12
+local FILLET_STEPS = 8
 
 local SOLID_TEXTURE = "rbxassetid://127451784449848"
 local DOTTED_TEXTURE = "rbxassetid://129215561553463"
@@ -82,6 +111,10 @@ local function createPart(name, color, material, size, cframe)
 	part.Size = size
 	part.CFrame = cframe
 	return part
+end
+
+local function smoothstep(u)
+	return u * u * (3 - 2 * u)
 end
 
 -- The island outline circles (identical to RoadMath.parseIslandShape)
@@ -100,6 +133,25 @@ local function parseIslandShape(value)
 		return { { X = 0, Z = 0, Radius = DEFAULT_RADIUS } }
 	end
 	return circles
+end
+
+-- The arms (identical to RoadMath.parseArms)
+local function parseArms(value)
+	local arms = {}
+	if typeof(value) == "string" then
+		for _, entry in string.split(value, ";") do
+			local parts = string.split(entry, ",")
+			local angle, exit, entryLanes = tonumber(parts[1]), tonumber(parts[2]), tonumber(parts[3])
+			if angle and exit and entryLanes and #arms < MAX_ARMS then
+				exit, entryLanes = math.max(math.floor(exit), 0), math.max(math.floor(entryLanes), 0)
+				if exit + entryLanes < 1 then
+					exit, entryLanes = 1, 1
+				end
+				table.insert(arms, { Angle = angle, Exit = exit, Entry = entryLanes })
+			end
+		end
+	end
+	return arms
 end
 
 -- The convex hull of the circles as arcs in order around the outline, each
@@ -192,6 +244,31 @@ local function hullOfCircles(circles)
 	return pieces
 end
 
+-- Where the ray from (cx, cz) at an angle leaves the outline, and the
+-- outward normal there (identical to RoadMath.outlineHit)
+local function outlineHit(stations, cx, cz, angle)
+	local dx, dz = math.cos(angle), math.sin(angle)
+	local bestT, hitX, hitZ, hitNX, hitNZ = math.huge, cx, cz, dx, dz
+	for i = 1, #stations do
+		local a, b = stations[i], stations[i % #stations + 1]
+		local ex, ez = b.PX - a.PX, b.PZ - a.PZ
+		local denominator = dx * ez - dz * ex
+		if math.abs(denominator) > 1e-9 then
+			local wx, wz = a.PX - cx, a.PZ - cz
+			local t = (wx * ez - wz * ex) / denominator
+			local s = (wx * dz - wz * dx) / denominator
+			if t > 0 and s >= -1e-9 and s <= 1 + 1e-9 and t < bestT then
+				bestT = t
+				hitX, hitZ = cx + dx * t, cz + dz * t
+				local nx, nz = a.NX + (b.NX - a.NX) * s, a.NZ + (b.NZ - a.NZ) * s
+				local length = math.sqrt(nx * nx + nz * nz)
+				hitNX, hitNZ = nx / length, nz / length
+			end
+		end
+	end
+	return hitX, hitZ, hitNX, hitNZ
+end
+
 --[[
 	The roundabout is drawn from "stations" around the island outline: points
 	on it (P) with the outward normal there (N). The tangent edges between
@@ -200,6 +277,13 @@ end
 	roundabout is the outline offset outward by some distance d, P + N * d:
 	the island and apron inside (negative d), the circulating carriageway
 	from 0 to its width, then the footway.
+
+	Each arm runs straight out along the outline normal where it attaches,
+	from the ring's outer edge. Arm positions are given as (a, lat): a along
+	the arm from the ring's outer edge, lat across it (+ to the left looking
+	out). Near the ring its exit and entry lanes part around a splitter
+	island, and its kerbs curve into the ring's outer kerb along fillet
+	circles tangent to both, where the ring's footway and edge line are cut.
 ]]
 local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 	Attributes = defaultAttributes,
@@ -214,10 +298,18 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 		local ringWidth = ringLanes * laneWidth
 		local sidewalkWidth = math.max(attributes.SidewalkWidth or 8, 0)
 		local smallest = math.huge
+		local cx, cz = 0, 0
 		for _, circle in circles do
 			smallest = math.min(smallest, circle.Radius)
+			cx += circle.X
+			cz += circle.Z
 		end
+		cx, cz = cx / #circles, cz / #circles
 		local apronWidth = math.clamp(attributes.ApronWidth or 0, 0, math.max(smallest - 1, 0))
+		local exitSide = if attributes.DriveSide == "Right" then -1 else 1
+		local armLength = math.max(attributes.ArmLength or 120, 1)
+		local taperLength = armLength * TAPER_FRACTION
+		local kerbRadius = math.max(attributes.EntryKerbRadius or 24, sidewalkWidth + 2)
 
 		local stations = {}
 		for _, piece in hullOfCircles(circles) do
@@ -238,11 +330,23 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 		local function point(station, d, h)
 			return Vector3.new(station.PX + station.NX * d, bottom + h, station.PZ + station.NZ * d)
 		end
+		-- A point part way (t) along the outline between stations a and b,
+		-- offset by d
+		local function between(a, b, t, d, h)
+			local px, pz = a.PX + (b.PX - a.PX) * t, a.PZ + (b.PZ - a.PZ) * t
+			local nx, nz = a.NX + (b.NX - a.NX) * t, a.NZ + (b.NZ - a.NZ) * t
+			return Vector3.new(px + nx * d, bottom + h, pz + nz * d)
+		end
 
 		local hRoadTop = ROAD_THICKNESS
 		local hSideTop = ROAD_THICKNESS + CURB_HEIGHT
+		local roadColor = attributes.RoadColor
 		local roadMaterial = attributes.RoadMaterial or ROAD_MATERIAL
 		local roadMaterialVariant = if roadMaterial == ROAD_MATERIAL then ROAD_MATERIAL_VARIANT else ""
+		local sidewalkColor = attributes.SidewalkColor
+		-- Kerbed islands: footway-surfaced, or grass on roads without footways
+		local islandColor = if sidewalkWidth > 0 then sidewalkColor else attributes.BlendColor
+		local islandMaterial = if sidewalkWidth > 0 then SIDEWALK_MATERIAL else attributes.BlendMaterial
 
 		-- two WedgeParts forming triangle pa-pb-pc, extruded `thickness` downward
 		local function tri(pa, pb, pc, color, material, mVariant, thickness)
@@ -304,8 +408,130 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 			tri(p1, p2, p3, color, material, mVariant, thickness)
 			tri(p1, p3, p4, color, material, mVariant, thickness)
 		end
+
+		--[[
+			Arms
+		--]]
+		local arms = {}
+		-- (No attribute at all means the default arms; "" is none)
+		for _, spec in parseArms(if attributes.Arms == nil then defaultAttributes.Arms else attributes.Arms) do
+			local px, pz, nx, nz = outlineHit(stations, cx, cz, math.rad(spec.Angle))
+			local arm = {
+				Exit = spec.Exit,
+				Entry = spec.Entry,
+				NX = nx,
+				NZ = nz,
+				TX = nz,
+				TZ = -nx,
+				AX = px + nx * ringWidth,
+				AZ = pz + nz * ringWidth,
+			}
+			-- A splitter island only separates two directions
+			arm.Splitter = if spec.Exit > 0 and spec.Entry > 0 then math.max(attributes.SplitterWidth or 16, 0) else 0
+			-- Lanes on each side (+lat is the left, looking out)
+			arm.PlusLanes = if exitSide > 0 then spec.Exit else spec.Entry
+			arm.MinusLanes = if exitSide > 0 then spec.Entry else spec.Exit
+			table.insert(arms, arm)
+		end
+		local function axialOf(arm, p: Vector3)
+			return (p.X - arm.AX) * arm.NX + (p.Z - arm.AZ) * arm.NZ
+		end
+		local function lateralOf(arm, p: Vector3)
+			return (p.X - arm.AX) * arm.TX + (p.Z - arm.AZ) * arm.TZ
+		end
+		local function armPoint(arm, a, lat, h)
+			return Vector3.new(arm.AX + arm.NX * a + arm.TX * lat, bottom + h, arm.AZ + arm.NZ * a + arm.TZ * lat)
+		end
+		local function gapAt(arm, a)
+			return arm.Splitter * (1 - smoothstep(math.clamp(a / taperLength, 0, 1)))
+		end
+		-- The roadway's outer edge on one side (signed lat) at a
+		local function outerAt(arm, side, a)
+			local lanes = if side > 0 then arm.PlusLanes else arm.MinusLanes
+			return side * (gapAt(arm, a) / 2 + lanes * laneWidth)
+		end
+
+		-- Each side's kerb fillet: a circle of kerbRadius tangent to the arm's
+		-- side edge (at its ring end) and to the ring's outer edge, so its
+		-- centre lies on the outline offset by ringWidth + kerbRadius. Found
+		-- where that offset outline crosses the line beside the arm, on the
+		-- arm's side of the roundabout.
+		for _, arm in arms do
+			arm.Fillets = {}
+			for _, side in { 1, -1 } do
+				local half = math.abs(outerAt(arm, side, 0))
+				local target = side * (half + kerbRadius)
+				local best = nil
+				for i = 1, count do
+					local a, b = stations[i], stations[i % count + 1]
+					local qa, qb = point(a, ringWidth + kerbRadius, 0), point(b, ringWidth + kerbRadius, 0)
+					local la, lb = lateralOf(arm, qa) - target, lateralOf(arm, qb) - target
+					if la * lb <= 0 and la ~= lb then
+						local t = la / (la - lb)
+						local c = qa + (qb - qa) * t
+						local axial = axialOf(arm, c)
+						if axial > 0 and (best == nil or axial < best.Axial) then
+							local nx, nz = a.NX + (b.NX - a.NX) * t, a.NZ + (b.NZ - a.NZ) * t
+							local length = math.sqrt(nx * nx + nz * nz)
+							best = { Centre = c, NX = nx / length, NZ = nz / length, Axial = axial }
+						end
+					end
+				end
+				if best then
+					local ring = best.Centre - Vector3.new(best.NX, 0, best.NZ) * kerbRadius
+					best.Ring = ring
+					best.RingLat = lateralOf(arm, ring)
+					best.Side = armPoint(arm, best.Axial, side * half, 0)
+				end
+				arm.Fillets[side] = best
+			end
+			-- The stretch of ring the arm's mouth cuts across
+			local plus, minus = arm.Fillets[1], arm.Fillets[-1]
+			arm.CutPlus = if plus then plus.RingLat else math.abs(outerAt(arm, 1, 0))
+			arm.CutMinus = if minus then minus.RingLat else -math.abs(outerAt(arm, -1, 0))
+		end
+
+		-- The parts of the outline between stations a and b (t from 0 to 1)
+		-- outside every arm's mouth, judged at the ring's outer edge
+		local function visiblePieces(a, b)
+			local qa, qb = point(a, ringWidth, 0), point(b, ringWidth, 0)
+			local pieces = { { 0, 1 } }
+			for _, arm in arms do
+				local la, lb = lateralOf(arm, qa), lateralOf(arm, qb)
+				local t0, t1
+				if math.abs(lb - la) < 1e-9 then
+					if la > arm.CutMinus and la < arm.CutPlus then
+						t0, t1 = 0, 1
+					end
+				else
+					local ta = (arm.CutMinus - la) / (lb - la)
+					local tb = (arm.CutPlus - la) / (lb - la)
+					t0, t1 = math.max(math.min(ta, tb), 0), math.min(math.max(ta, tb), 1)
+				end
+				-- Only the near side of the roundabout
+				if t0 and t1 > t0 and axialOf(arm, qa + (qb - qa) * ((t0 + t1) / 2)) > -ringWidth then
+					local remaining = {}
+					for _, piece in pieces do
+						if piece[2] <= t0 or piece[1] >= t1 then
+							table.insert(remaining, piece)
+						else
+							if piece[1] < t0 then
+								table.insert(remaining, { piece[1], t0 })
+							end
+							if piece[2] > t1 then
+								table.insert(remaining, { t1, piece[2] })
+							end
+						end
+					end
+					pieces = remaining
+				end
+			end
+			return pieces
+		end
+
 		-- The band between offsets d0 and d1 all the way round, at height h
-		local function band(d0, d1, h, color, material, mVariant, thickness)
+		-- (cut at the arms' mouths when `cut`)
+		local function band(d0, d1, h, color, material, mVariant, thickness, cut)
 			if d1 - d0 < 0.01 then
 				return
 			end
@@ -314,46 +540,171 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 				local along = Vector2.new(b.PX - a.PX, b.PZ - a.PZ).Magnitude
 				-- (Arcs of very small circles still turn between stations)
 				if along > 1e-4 or a.NX ~= b.NX or a.NZ ~= b.NZ then
-					quad(point(a, d0, h), point(a, d1, h), point(b, d1, h), point(b, d0, h),
-						color, material, mVariant, thickness)
+					for _, piece in (if cut then visiblePieces(a, b) else { { 0, 1 } }) do
+						local t0, t1 = piece[1], piece[2]
+						if t1 - t0 > 1e-4 then
+							quad(between(a, b, t0, d0, h), between(a, b, t0, d1, h), between(a, b, t1, d1, h), between(a, b, t1, d0, h),
+								color, material, mVariant, thickness)
+						end
+					end
 				end
 			end
 		end
 
 		-- The circulating carriageway, with road surface under the footway
-		band(0, ringWidth + sidewalkWidth, hRoadTop, attributes.RoadColor, roadMaterial, roadMaterialVariant, ROAD_THICKNESS)
-		-- The footway around the outside
-		band(ringWidth, ringWidth + sidewalkWidth, hSideTop, attributes.SidewalkColor, SIDEWALK_MATERIAL, "", CURB_HEIGHT)
+		band(0, ringWidth + sidewalkWidth, hRoadTop, roadColor, roadMaterial, roadMaterialVariant, ROAD_THICKNESS, false)
+		-- The footway around the outside, cut where arms join
+		band(ringWidth, ringWidth + sidewalkWidth, hSideTop, sidewalkColor, SIDEWALK_MATERIAL, "", CURB_HEIGHT, true)
 		-- The apron: a low raised band just inside the ring
 		band(-apronWidth, 0, ROAD_THICKNESS + APRON_RISE, attributes.ApronColor, attributes.ApronMaterial, "",
-			ROAD_THICKNESS + APRON_RISE)
+			ROAD_THICKNESS + APRON_RISE, false)
 
 		-- The island: a raised fan of triangles from its centroid (it's convex)
 		local islandEdge = {}
-		local cx, cz = 0, 0
+		local ix, iz = 0, 0
 		for _, station in stations do
 			local p = point(station, -apronWidth, hSideTop)
 			local last = islandEdge[#islandEdge]
 			if not last or (p - last).Magnitude > 1e-3 then
 				table.insert(islandEdge, p)
-				cx += p.X
-				cz += p.Z
+				ix += p.X
+				iz += p.Z
 			end
 		end
 		if #islandEdge >= 3 then
-			local centre = Vector3.new(cx / #islandEdge, bottom + hSideTop, cz / #islandEdge)
+			local centre = Vector3.new(ix / #islandEdge, bottom + hSideTop, iz / #islandEdge)
 			for i = 1, #islandEdge do
 				tri(centre, islandEdge[i], islandEdge[i % #islandEdge + 1],
 					attributes.IslandColor, attributes.IslandMaterial, "", CURB_HEIGHT)
 			end
 		end
 
-		-- Markings: edge lines along both sides of the ring, dotted lines
-		-- between its lanes
+		-- Each arm's geometry
+		for _, arm in arms do
+			-- Where the kerbed splitter island ends (its nose): where the
+			-- gap narrows to NOSE_WIDTH
+			local noseA = 0
+			if arm.Splitter > NOSE_WIDTH then
+				local lo, hi = 0, taperLength
+				for _ = 1, 30 do
+					local mid = (lo + hi) / 2
+					if gapAt(arm, mid) > NOSE_WIDTH then
+						lo = mid
+					else
+						hi = mid
+					end
+				end
+				noseA = (lo + hi) / 2
+			end
+			arm.NoseA = noseA
+
+			-- Slices along the arm, including where the footways start
+			local slices = {}
+			for k = 0, ARM_SLICES do
+				table.insert(slices, armLength * k / ARM_SLICES)
+			end
+			for _, extra in { ISLAND_START, noseA } do
+				if extra > 0 and extra < armLength then
+					table.insert(slices, extra)
+				end
+			end
+			local footwayStart = {}
+			for _, side in { 1, -1 } do
+				local fillet = arm.Fillets[side]
+				footwayStart[side] = if fillet then math.min(fillet.Axial, armLength) else 0
+				table.insert(slices, footwayStart[side])
+			end
+			table.sort(slices)
+			arm.Slices = slices
+			arm.FootwayStart = footwayStart
+
+			-- The road: across the lanes, and across the footways too beyond
+			-- the fillets
+			for k = 1, #slices - 1 do
+				local a0, a1 = slices[k], slices[k + 1]
+				if a1 - a0 > 1e-4 then
+					local function edges(a)
+						local plusExtra = if a0 >= footwayStart[1] - 1e-4 then sidewalkWidth else 0
+						local minusExtra = if a0 >= footwayStart[-1] - 1e-4 then sidewalkWidth else 0
+						return outerAt(arm, -1, a) - minusExtra, outerAt(arm, 1, a) + plusExtra
+					end
+					local lo0, hi0 = edges(a0)
+					local lo1, hi1 = edges(a1)
+					quad(armPoint(arm, a0, lo0, hRoadTop), armPoint(arm, a0, hi0, hRoadTop),
+						armPoint(arm, a1, hi1, hRoadTop), armPoint(arm, a1, lo1, hRoadTop),
+						roadColor, roadMaterial, roadMaterialVariant, ROAD_THICKNESS)
+					-- Footways along the sides
+					for _, side in { 1, -1 } do
+						if sidewalkWidth > 0 and a0 >= footwayStart[side] - 1e-4 then
+							local i0, i1 = outerAt(arm, side, a0), outerAt(arm, side, a1)
+							quad(armPoint(arm, a0, i0, hSideTop), armPoint(arm, a0, i0 + side * sidewalkWidth, hSideTop),
+								armPoint(arm, a1, i1 + side * sidewalkWidth, hSideTop), armPoint(arm, a1, i1, hSideTop),
+								sidewalkColor, SIDEWALK_MATERIAL, "", CURB_HEIGHT)
+						end
+					end
+					-- The kerbed splitter island, up to its nose
+					if a0 >= ISLAND_START - 1e-4 and a1 <= noseA + 1e-4 then
+						quad(armPoint(arm, a0, -gapAt(arm, a0) / 2, hSideTop), armPoint(arm, a0, gapAt(arm, a0) / 2, hSideTop),
+							armPoint(arm, a1, gapAt(arm, a1) / 2, hSideTop), armPoint(arm, a1, -gapAt(arm, a1) / 2, hSideTop),
+							islandColor, islandMaterial, "", CURB_HEIGHT)
+					end
+				end
+			end
+
+			-- The mouth: the kerb fillets, their footways, and the road
+			-- between them and the ring
+			local mouth = {}
+			for _, side in { 1, -1 } do
+				local fillet = arm.Fillets[side]
+				local points = {}
+				if fillet then
+					local c = fillet.Centre
+					local fromAngle = math.atan2(fillet.Ring.Z - c.Z, fillet.Ring.X - c.X)
+					local toAngle = math.atan2(fillet.Side.Z - c.Z, fillet.Side.X - c.X)
+					local sweep = (toAngle - fromAngle + math.pi) % (2 * math.pi) - math.pi
+					fillet.FromAngle, fillet.Sweep = fromAngle, sweep
+					local function onArc(k, radius, h)
+						local angle = fromAngle + sweep * k / FILLET_STEPS
+						return Vector3.new(c.X + math.cos(angle) * radius, bottom + h, c.Z + math.sin(angle) * radius)
+					end
+					for k = 0, FILLET_STEPS do
+						table.insert(points, onArc(k, kerbRadius, hRoadTop))
+						if k < FILLET_STEPS and sidewalkWidth > 0 then
+							quad(onArc(k, kerbRadius - sidewalkWidth, hSideTop), onArc(k, kerbRadius, hSideTop),
+								onArc(k + 1, kerbRadius, hSideTop), onArc(k + 1, kerbRadius - sidewalkWidth, hSideTop),
+								sidewalkColor, SIDEWALK_MATERIAL, "", CURB_HEIGHT)
+						end
+					end
+				else
+					local half = outerAt(arm, side, 0)
+					table.insert(points, armPoint(arm, 0, half, hRoadTop))
+				end
+				mouth[side] = points
+			end
+			-- Fan the mouth's road from a point on the arm's axis
+			local outline = {}
+			for _, p in mouth[1] do
+				table.insert(outline, p)
+			end
+			for k = #mouth[-1], 1, -1 do
+				table.insert(outline, mouth[-1][k])
+			end
+			local reach = math.min(footwayStart[1], footwayStart[-1])
+			local hub = armPoint(arm, reach / 2, 0, hRoadTop)
+			for k = 1, #outline - 1 do
+				tri(hub, outline[k], outline[k + 1], roadColor, roadMaterial, roadMaterialVariant, ROAD_THICKNESS)
+			end
+			tri(hub, outline[#outline], outline[1], roadColor, roadMaterial, roadMaterialVariant, ROAD_THICKNESS)
+		end
+
+		--[[
+			Markings
+		--]]
 		if attributes.HaveLaneMarkings ~= false then
-			local color = attributes.LaneMarkingColor
+			local laneColor = attributes.LaneMarkingColor
+			local centreColor = attributes.CenterlineColor
 			local markingCount = 0
-			local function strip(pa, pb, dotted, dashOffset)
+			local function strip(pa, pb, color, width, dotted, dashOffset)
 				local len = (pb - pa).Magnitude
 				if len < 0.05 then
 					return
@@ -363,14 +714,14 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 					"RoadMarking",
 					color,
 					SAND,
-					Vector3.new(len + 0.05, MARK_THICKNESS, MARK_WIDTH),
+					Vector3.new(len + 0.05, MARK_THICKNESS, width),
 					CFrame.lookAt((pa + pb) / 2, pb) * CFrame.Angles(0, -math.pi / 2, 0)
 				)
 				if attributes.TextureLaneMarkings then
 					local texture = Instance.new("Texture")
 					texture.Face = Enum.NormalId.Top
 					texture.Color3 = color
-					texture.StudsPerTileV = MARK_WIDTH
+					texture.StudsPerTileV = width
 					if dotted then
 						texture.ColorMap = DOTTED_TEXTURE
 						texture.StudsPerTileU = DOTTED_MARK_TILE_LENGTH
@@ -386,23 +737,123 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 				end
 				part.Parent = targetContainer
 			end
-			local function ringLine(d, dotted)
+			local markHeight = hRoadTop + 0.05
+			-- A line around the ring at offset d (cut at the arms' mouths
+			-- when `cut`)
+			local function ringLine(d, dotted, cut)
 				local travelled = 0.3125 * DOTTED_MARK_TILE_LENGTH
 				for i = 1, count do
-					local pa = point(stations[i], d, hRoadTop + 0.05)
-					local pb = point(stations[i % count + 1], d, hRoadTop + 0.05)
-					strip(pa, pb, dotted, travelled)
-					travelled += (pb - pa).Magnitude
+					local a, b = stations[i], stations[i % count + 1]
+					for _, piece in (if cut then visiblePieces(a, b) else { { 0, 1 } }) do
+						local pa = between(a, b, piece[1], d, markHeight)
+						local pb = between(a, b, piece[2], d, markHeight)
+						strip(pa, pb, laneColor, MARK_WIDTH, dotted, travelled)
+					end
+					travelled += (point(b, d, 0) - point(a, d, 0)).Magnitude
 				end
 			end
-			ringLine(EDGE_INSET, false)
-			ringLine(ringWidth - EDGE_INSET, false)
+			ringLine(EDGE_INSET, false, false)
+			ringLine(ringWidth - EDGE_INSET, false, true)
 			for k = 1, ringLanes - 1 do
-				ringLine(k * laneWidth, true)
+				ringLine(k * laneWidth, true, false)
+			end
+
+			for _, arm in arms do
+				local slices = arm.Slices
+				-- A line along the arm at lat(a), from a0 to a1
+				local function armLine(latAt, a0, a1, color, dotted)
+					local travelled = 0.3125 * DOTTED_MARK_TILE_LENGTH
+					for k = 1, #slices - 1 do
+						local s0, s1 = math.max(slices[k], a0), math.min(slices[k + 1], a1)
+						if s1 > s0 + 1e-4 then
+							local pa = armPoint(arm, s0, latAt(s0), markHeight)
+							local pb = armPoint(arm, s1, latAt(s1), markHeight)
+							strip(pa, pb, color, MARK_WIDTH, dotted, travelled)
+							travelled += (pb - pa).Magnitude
+						end
+					end
+				end
+				for _, side in { 1, -1 } do
+					-- Edge lines: along the arm, then round the fillet into the
+					-- ring's outer edge line
+					armLine(function(a)
+						return outerAt(arm, side, a) - side * EDGE_INSET
+					end, arm.FootwayStart[side], armLength, laneColor, false)
+					local fillet = arm.Fillets[side]
+					if fillet then
+						local c = fillet.Centre
+						for k = 0, FILLET_STEPS - 1 do
+							local function onArc(step)
+								local angle = fillet.FromAngle + fillet.Sweep * step / FILLET_STEPS
+								local radius = kerbRadius + EDGE_INSET
+								return Vector3.new(c.X + math.cos(angle) * radius, bottom + markHeight, c.Z + math.sin(angle) * radius)
+							end
+							strip(onArc(k), onArc(k + 1), laneColor, MARK_WIDTH, false)
+						end
+					end
+					-- Lane lines between each side's lanes
+					local lanes = if side > 0 then arm.PlusLanes else arm.MinusLanes
+					for k = 1, lanes - 1 do
+						armLine(function(a)
+							return side * (gapAt(arm, a) / 2 + k * laneWidth)
+						end, 0, armLength, laneColor, true)
+					end
+				end
+				if arm.Splitter > 0 then
+					-- The centre line: two lines opening out around the
+					-- splitter island near the ring
+					for _, side in { 1, -1 } do
+						armLine(function(a)
+							return side * (gapAt(arm, a) / 2 + CENTER_OFFSET)
+						end, 0, armLength, centreColor, false)
+					end
+					-- Diagonal hatching between them ahead of the island's
+					-- nose, while there's room
+					local inset = CENTER_OFFSET + MARK_WIDTH / 2 + HATCH_WIDTH / 2
+					local function faceAt(side, a)
+						return side * (gapAt(arm, a) / 2 + CENTER_OFFSET) - side * (MARK_WIDTH / 2 + HATCH_WIDTH / 2)
+					end
+					local a = math.max(arm.NoseA, ISLAND_START) + HATCH_SPACING / 2
+					while a < taperLength and gapAt(arm, a) / 2 + CENTER_OFFSET - inset > HATCH_WIDTH / 2 do
+						-- A stripe at 45 degrees through (a, 0), meeting each
+						-- border's inner face
+						local function meet(side)
+							local lat = faceAt(side, a)
+							for _ = 1, 8 do
+								lat = faceAt(side, a + lat)
+							end
+							return armPoint(arm, a + lat, lat, markHeight)
+						end
+						strip(meet(-1), meet(1), laneColor, HATCH_WIDTH, false)
+						a += HATCH_SPACING
+					end
+				elseif arm.Exit > 0 and arm.Entry > 0 then
+					-- No splitter: a plain double centre line
+					for _, side in { 1, -1 } do
+						armLine(function()
+							return side * CENTER_OFFSET
+						end, 0, armLength, centreColor, false)
+					end
+				end
+				-- Give way to traffic on the roundabout: a broken line across
+				-- the entry lanes at the ring
+				if arm.Entry > 0 then
+					local entrySide = -exitSide
+					local inner = math.abs(gapAt(arm, GIVE_WAY_SETBACK) / 2) + (if arm.Exit > 0 then CENTER_OFFSET + 1 else EDGE_INSET)
+					local outer = math.abs(outerAt(arm, entrySide, GIVE_WAY_SETBACK)) - EDGE_INSET
+					local lat = inner
+					while lat < outer do
+						local dashEnd = math.min(lat + GIVE_WAY_DASH, outer)
+						strip(armPoint(arm, GIVE_WAY_SETBACK, entrySide * lat, markHeight),
+							armPoint(arm, GIVE_WAY_SETBACK, entrySide * dashEnd, markHeight),
+							laneColor, GIVE_WAY_WIDTH, false)
+						lat = dashEnd + GIVE_WAY_GAP
+					end
+				end
 			end
 		end
 
-		-- Blend skirt around the outside
+		-- Blend skirt around the outside of the ring
 		if attributes.Blend then
 			local blendAngle = math.rad(attributes.BlendAngle or 30)
 			local cosA, sinA = math.cos(blendAngle), math.sin(blendAngle)
@@ -410,10 +861,29 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 			local outer = ringWidth + sidewalkWidth
 			for i = 1, count do
 				local a, b = stations[i], stations[i % count + 1]
-				local topA, topB = point(a, outer, blendTop), point(b, outer, blendTop)
-				local slopeA = Vector3.new(a.NX * cosA, -sinA, a.NZ * cosA) * BLEND_LENGTH
-				local slopeB = Vector3.new(b.NX * cosA, -sinA, b.NZ * cosA) * BLEND_LENGTH
-				quad(topA, topB, topB + slopeB, topA + slopeA, attributes.BlendColor, attributes.BlendMaterial, "", BLEND_THICKNESS)
+				for _, piece in visiblePieces(a, b) do
+					local topA = between(a, b, piece[1], outer, blendTop)
+					local topB = between(a, b, piece[2], outer, blendTop)
+					local slopeA = Vector3.new(a.NX * cosA, -sinA, a.NZ * cosA) * BLEND_LENGTH
+					local slopeB = Vector3.new(b.NX * cosA, -sinA, b.NZ * cosA) * BLEND_LENGTH
+					quad(topA, topB, topB + slopeB, topA + slopeA, attributes.BlendColor, attributes.BlendMaterial, "", BLEND_THICKNESS)
+				end
+			end
+		end
+
+		-- Snapping helpers: cubes at each arm end's two corners, 2 studs back
+		-- along the arm
+		if attributes.AdjustShowSnappingHelper then
+			for _, arm in arms do
+				local centre = exitSide * (arm.Exit - arm.Entry) * laneWidth / 2
+				local half = (arm.Exit + arm.Entry) * laneWidth / 2 + sidewalkWidth
+				for _, sgn in { -1, 1 } do
+					local p = armPoint(arm, armLength - 2, centre + sgn * half, 2)
+					local cube = createPart("SnappingHelper", Color3.fromRGB(255, 40, 40), Enum.Material.SmoothPlastic,
+						Vector3.new(4, 4, 4), CFrame.new(p))
+					cube.CanCollide = false
+					cube.Parent = targetContainer
+				end
 			end
 		end
 	end,

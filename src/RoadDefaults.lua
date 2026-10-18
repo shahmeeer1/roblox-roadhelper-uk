@@ -38,6 +38,14 @@ local RoadDefaults = {
 	RoundaboutRingLanes = 2,
 	RoundaboutApronWidth = 0,
 	RoundaboutMaxCorners = 12,
+	-- Roundabout arms: how far each runs out from the ring (about 18 m), the
+	-- splitter island between its entry and exit (about 2.4 m), and the
+	-- kerb radius where it meets the ring (about 3.6 m). New roundabouts get
+	-- four single-lane arms.
+	RoundaboutArmLength = 120,
+	RoundaboutSplitterWidth = 16,
+	RoundaboutEntryKerbRadius = 24,
+	RoundaboutArms = "0,1,1;90,1,1;180,1,1;270,1,1",
 }
 
 -- Total road width with the default lane layout

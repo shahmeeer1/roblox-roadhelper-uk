@@ -954,6 +954,7 @@ return function(t: TestTypes.TestContext)
 				LaneWidth = 24,
 				SidewalkWidth = 8,
 				ApronWidth = 50,
+				Arms = "",
 			},
 		}
 		fake.GetAttribute = function(self, name)
@@ -967,5 +968,76 @@ return function(t: TestTypes.TestContext)
 		local size = RoadMath.roundaboutSize(layout)
 		t.expect(size.X).toBe(2 * (90 + 20 + 48 + 8))
 		t.expect(size.Z).toBe(2 * (40 + 20 + 48 + 8))
+	end)
+
+	local function makeRoundabout(attrs: { [string]: any }): RoadMath.SegmentInfo
+		local fake: any = { attrs = attrs }
+		fake.GetAttribute = function(self, name)
+			return self.attrs[name]
+		end
+		local layout = RoadMath.roundaboutLayout(fake)
+		return {
+			Model = fake,
+			Kind = "Roundabout",
+			Width = layout.RingWidth,
+			Size = RoadMath.roundaboutSize(layout),
+			Pivot = CFrame.identity,
+			Flip = false,
+			Roundabout = layout,
+		}
+	end
+
+	t.test("roundabout arms: parse, and meet the outline along its normal", function()
+		local arms = RoadMath.parseArms("0,1,1;90,2,1;45,0,0;junk")
+		t.expect(#arms).toBe(3)
+		-- No lanes at all becomes one each way
+		t.expect(arms[3].Exit).toBe(1)
+		t.expect(arms[3].Entry).toBe(1)
+		t.expect(RoadMath.serializeArms(arms)).toBe("0,1,1;90,2,1;45,1,1")
+
+		-- A rectangle's side: hit straight on, normal square to it
+		local stations = RoadMath.roundaboutStations(RoadMath.parseIslandShape("-90,-40,20;90,-40,20;90,40,20;-90,40,20"))
+		local x, z, nx, nz = RoadMath.outlineHit(stations, 0, 0, 0)
+		t.expect(math.abs(x - 110) < 1e-6 and math.abs(z) < 1e-6).toBe(true)
+		t.expect(math.abs(nx - 1) < 1e-6 and math.abs(nz) < 1e-6).toBe(true)
+	end)
+
+	t.test("roundabout arms: ends, widths and lanes", function()
+		local roundabout = makeRoundabout({
+			IslandShape = "0,0,60",
+			RingLanes = 2,
+			LaneWidth = 24,
+			SidewalkWidth = 8,
+			ArmLength = 120,
+			Arms = "0,1,1;90,2,1",
+		})
+		local ids = RoadMath.endpointIds(roundabout)
+		t.expect(#ids).toBe(2)
+		t.expect(ids[2]).toBe("Arm2")
+		t.expect(table.find(RoadMath.pickableEndpointIds(roundabout), "Centre") ~= nil).toBe(true)
+
+		-- Arm 1 runs out along +X from the ring's outer edge (60 + 48) for
+		-- 120, centred on its axis (one lane each way)
+		local first = RoadMath.getEndpoint(roundabout, "Arm1")
+		expectFuzzy(t, first.WorldCFrame.Position, Vector3.new(228, 0, 0))
+		expectFuzzy(t, first.WorldCFrame.LookVector, Vector3.new(1, 0, 0))
+		t.expect(RoadMath.endpointWidth(first)).toBe(64)
+		local lanesOut, lanesIn = RoadMath.getLaneCounts(first)
+		t.expect(lanesOut).toBe(1)
+		t.expect(lanesIn).toBe(1)
+
+		-- Arm 2 runs along +Z; with 2 exit lanes to 1 entry its roadway's
+		-- centre sits half a lane to the exit side (the left looking out,
+		-- driving on the left: +X when facing +Z)
+		local second = RoadMath.getEndpoint(roundabout, "Arm2")
+		expectFuzzy(t, second.WorldCFrame.Position, Vector3.new(12, 0, 228))
+		t.expect(RoadMath.endpointWidth(second)).toBe(3 * 24 + 16)
+		lanesOut, lanesIn = RoadMath.getLaneCounts(second)
+		t.expect(lanesOut).toBe(2)
+		t.expect(lanesIn).toBe(1)
+
+		-- The box takes in the arms
+		t.expect(roundabout.Size.X >= 2 * (228 + 0)).toBe(true)
+		t.expect(roundabout.Size.Z >= 2 * 228).toBe(true)
 	end)
 end

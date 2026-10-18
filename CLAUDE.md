@@ -138,6 +138,15 @@ lazy-loads `src/main.lua` on first activation.
   `ApronWidth` inside. Size is derived (`RoadMath.roundaboutSize`). Selecting a roundabout
   selects its `"Centre"` pseudo-endpoint (pickable, faces up so it never joins anything; see
   `RoadMath.pickableEndpointIds`). `IslandShapeHandles` drag the outline circles.
+- Roundabout arms (`Arms`, `"angle,exit,entry;..."`; ends `Arm1`..`Arm12`, forward = exit):
+  each sits where the ray from the island centroid at its angle meets the outline, running out
+  along the outline normal from the ring's outer edge for `ArmLength`. Exit lanes keep to the
+  DriveSide (left looking out, in the UK); near the ring the directions part around a splitter
+  island (`SplitterWidth`, kerbed to its nose, hatched ahead), and kerb fillets
+  (`EntryKerbRadius`) join the arm's kerbs to the ring's, found exactly on the outline offset
+  by ringWidth + radius; the ring's footway and outer edge line are cut across each mouth.
+  Missing `Arms` means the 4-arm default in both RoadMath and the generator ("" is none).
+  Removing an arm renumbers later ones, so joined roads are remapped, not re-seated by old id.
 - The Adjust dir/grade/bank rotations all pivot about the endpoint centre point, so endpoint
   *positions* are invariant under angle edits — only move edits Size/pivot.
 - Joints are purely spatial: two ends within `RoadMath.JOINT_TOLERANCE` facing opposite ways.

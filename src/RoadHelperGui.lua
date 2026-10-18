@@ -41,6 +41,9 @@ local ROADHELPER_CONFIG: PluginGuiTypes.PluginGuiConfig = {
 local function describeStatus(state: createRoadSession.SelectionState): string
 	if state.Kind == "none" then
 		return "Click the end of a road segment to select that endpoint."
+	elseif (state :: any).SegmentKind == "Roundabout" and (state :: any).ArmIndex then
+		return "<b>Roundabout arm selected.</b>"
+			.. "\nDrag the knob at its mouth to move it round, or a cone to extend it with a road. Click the island to select the whole roundabout."
 	elseif (state :: any).SegmentKind == "Roundabout" then
 		return "<b>Roundabout selected.</b>"
 			.. "\nDrag the white knobs to reshape the island and the blue knobs to resize its corners; the central handles move the whole roundabout."
@@ -999,6 +1002,55 @@ local function RoundaboutPanel(props: {
 			}),
 		})
 	end
+	if state.ArmIndex then
+		-- One of the roundabout's arms
+		return e(SubPanel, {
+			Title = `Roundabout Arm {state.ArmIndex}`,
+			Padding = UDim.new(0, 6),
+			LayoutOrder = props.LayoutOrder,
+		}, {
+			ExitLanes = numberField(
+				"Exit Lanes",
+				"Lanes leaving the roundabout along this arm. Zero makes it entry only.",
+				1,
+				state.ArmExit,
+				0,
+				"ArmExit"
+			),
+			EntryLanes = numberField(
+				"Entry Lanes",
+				"Lanes arriving at the roundabout along this arm, which give way to traffic already on it. Zero makes it exit only.",
+				2,
+				state.ArmEntry,
+				0,
+				"ArmEntry"
+			),
+			Position = numberField(
+				"Position",
+				"Where the arm leaves the roundabout, as an angle around the island in degrees. You can also drag the knob at its mouth; joined roads follow.",
+				3,
+				state.ArmAngle,
+				-360,
+				"ArmAngle"
+			),
+			Remove = e("Frame", {
+				Size = UDim2.new(1, 0, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				BackgroundTransparency = 1,
+				LayoutOrder = 4,
+			}, {
+				Button = e(OperationButton, {
+					Text = "Remove Arm",
+					Height = 28,
+					Disabled = false,
+					Color = Colors.DARK_RED,
+					OnClick = function()
+						props.RoundaboutAction("RemoveArm")
+					end,
+				}),
+			}),
+		})
+	end
 	local selectedCorner = state.SelectedCorner
 	return e(SubPanel, {
 		Title = "Roundabout",
@@ -1090,6 +1142,46 @@ local function RoundaboutPanel(props: {
 			state.ApronWidth,
 			0,
 			"ApronWidth"
+		),
+		AddArm = e("Frame", {
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			LayoutOrder = 8,
+		}, {
+			Button = e(OperationButton, {
+				Text = `Add Arm ({state.ArmCount} now)`,
+				Height = 28,
+				Disabled = state.ArmCount >= 12,
+				Color = Colors.ACTION_BLUE,
+				OnClick = function()
+					props.RoundaboutAction("AddArm")
+				end,
+			}),
+		}),
+		ArmLength = numberField(
+			"Arm Length",
+			"How far every arm runs out from the ring before its road end, in studs.",
+			9,
+			state.ArmLength,
+			1,
+			"ArmLength"
+		),
+		SplitterWidth = numberField(
+			"Splitter Width",
+			"Width of the splitter island between each arm's entry and exit lanes at the ring, in studs. It tapers away along the arm, hatched ahead of its kerbed nose. Zero leaves just a centre line.",
+			10,
+			state.SplitterWidth,
+			0,
+			"SplitterWidth"
+		),
+		EntryKerbRadius = numberField(
+			"Kerb Radius",
+			"Radius of the kerbs curving from each arm into the ring, in studs.",
+			11,
+			state.EntryKerbRadius,
+			1,
+			"EntryKerbRadius"
 		),
 	})
 end

@@ -90,6 +90,14 @@ export type SelectionState = {
 	SelectedCornerRadius: number?,
 	RingLanes: number?,
 	ApronWidth: number?,
+	ArmCount: number?,
+	ArmLength: number?,
+	SplitterWidth: number?,
+	EntryKerbRadius: number?,
+	ArmIndex: number?,
+	ArmExit: number?,
+	ArmEntry: number?,
+	ArmAngle: number?,
 	LaneWidth: number,
 	SidewalkWidth: number,
 	IntersectionAngle: number,
@@ -225,6 +233,18 @@ local GEOMETRY_ATTRIBUTES = {
 	-- Y split layout
 	SplitLanesLeft = true,
 	SplitSeparation = true,
+	-- Roundabout layout and island
+	IslandShape = true,
+	RingLanes = true,
+	Arms = true,
+	ArmLength = true,
+	SplitterWidth = true,
+	EntryKerbRadius = true,
+	ApronWidth = true,
+	ApronMaterial = true,
+	ApronColor = true,
+	IslandMaterial = true,
+	IslandColor = true,
 	-- Mini roundabout (an intersection variant)
 	MiniRoundabout = true,
 	MiniRoundaboutRaised = true,
@@ -274,7 +294,8 @@ local function createRoadSession(plugin: Plugin)
 			return nil
 		end
 		local info = RoadMath.getSegmentInfo(ref.Model)
-		if not info then
+		-- (The end may be gone: a roundabout arm removed by undo, say)
+		if not info or not table.find(RoadMath.pickableEndpointIds(info), ref.Id) then
 			return nil
 		end
 		return RoadMath.getEndpoint(info, ref.Id)
@@ -1571,18 +1592,36 @@ local function createRoadSession(plugin: Plugin)
 	-- Roundabouts
 	--------------------------------------------------------------------------
 
-	-- Selecting a roundabout selects its centre. Its island outline's
-	-- circles ("corners") are edited with IslandShapeHandles and the panel;
-	-- one corner at a time can be selected, for the panel to act on.
+	-- Selecting a roundabout's island selects its centre; selecting one of
+	-- its arms' ends selects that arm. Its island outline's circles
+	-- ("corners") are edited with IslandShapeHandles and the panel; one
+	-- corner at a time can be selected, for the panel to act on.
 	local selectedCorner: { Model: Model, Index: number }? = nil
 
-	-- The selected roundabout, if the selection is one
-	local function getSelectedRoundabout(): (Model?, RoadMath.RoundaboutLayout?)
+	-- The selected roundabout (its centre or one of its arms), and the
+	-- selected arm's index if it's an arm
+	local function getSelectedRoundabout(): (Model?, RoadMath.RoundaboutLayout?, number?)
 		local selected = getSelectedEndpoint()
-		if not selected or selected.Id ~= "Centre" or not selected.Segment.Roundabout then
-			return nil, nil
+		if not selected or not selected.Segment.Roundabout then
+			return nil, nil, nil
 		end
-		return selected.Segment.Model, selected.Segment.Roundabout
+		return selected.Segment.Model, selected.Segment.Roundabout, RoadMath.armIndex(selected.Id)
+	end
+
+	-- The arms as attribute data, for editing
+	local function armSpecs(layout: RoadMath.RoundaboutLayout): { { Angle: number, Exit: number, Entry: number } }
+		local specs = {}
+		for _, arm in layout.Arms do
+			table.insert(specs, { Angle = arm.Angle, Exit = arm.Exit, Entry = arm.Entry })
+		end
+		return specs
+	end
+
+	-- Roads joined to the selected roundabout's arms follow them when the
+	-- roundabout changes shape: captured before an edit, re-seated after
+	local function captureArmConnections(model: Model): { IntersectionConnection }
+		local info = RoadMath.getSegmentInfo(model)
+		return if info then collectIntersectionConnections(info) else {}
 	end
 
 	local function getSelectedCornerIndex(model: Model, layout: RoadMath.RoundaboutLayout): number?
@@ -1613,12 +1652,17 @@ local function createRoadSession(plugin: Plugin)
 		Triangle = "0,-60,20;56,36,20;-56,36,20",
 	}
 
-	-- Drag edits from IslandShapeHandles: a recording spans the whole drag
+	-- Drag edits from IslandShapeHandles: a recording spans the whole drag,
+	-- and the roads joined to the arms follow throughout
+	local dragConnections: { IntersectionConnection } = {}
 	local function startIslandEdit()
+		local model = getSelectedRoundabout()
+		dragConnections = if model then captureArmConnections(model) else {}
 		gestureActive = true
 		beginRecording("Shape Roundabout")
 	end
 	local function endIslandEdit()
+		dragConnections = {}
 		finishRecording()
 		gestureActive = false
 		updateDragger()
@@ -1632,19 +1676,93 @@ local function createRoadSession(plugin: Plugin)
 		local circles = layout.Circles
 		edit(circles[index])
 		writeIslandShape(model, circles)
+		reseatConnectedEnds(model, dragConnections)
+		changeSignal:Fire()
+	end
+	local function moveArm(index: number, angle: number)
+		local model, layout = getSelectedRoundabout()
+		if not model or not layout or not layout.Arms[index] then
+			return
+		end
+		local specs = armSpecs(layout)
+		specs[index].Angle = angle
+		model:SetAttribute("Arms", RoadMath.serializeArms(specs))
+		fitRoundaboutSize(model)
+		reseatConnectedEnds(model, dragConnections)
 		changeSignal:Fire()
 	end
 
 	-- Panel actions on the selected roundabout
 	local function roundaboutAction(action: string, value: any)
-		local model, layout = getSelectedRoundabout()
+		local model, layout, armIndex = getSelectedRoundabout()
 		if not model or not layout then
 			return
 		end
 		local circles = layout.Circles
 		local index = getSelectedCornerIndex(model, layout)
+		local specs = armSpecs(layout)
+		local connections = captureArmConnections(model)
 		beginRecording("Edit Roundabout")
-		if action == "Shape" and ISLAND_SHAPES[value] then
+		if action == "AddArm" and #specs < 12 then
+			-- In the middle of the widest gap between the arms
+			local angles = {}
+			for _, spec in specs do
+				table.insert(angles, spec.Angle % 360)
+			end
+			table.sort(angles)
+			local angle = 0
+			if #angles > 0 then
+				local widest = -1
+				for i, current in angles do
+					local nextAngle = if i < #angles then angles[i + 1] else angles[1] + 360
+					if nextAngle - current > widest then
+						widest = nextAngle - current
+						angle = (current + widest / 2) % 360
+					end
+				end
+			end
+			table.insert(specs, { Angle = angle, Exit = 1, Entry = 1 })
+			model:SetAttribute("Arms", RoadMath.serializeArms(specs))
+			fitRoundaboutSize(model)
+			-- Select the new arm
+			selectedRef = { Model = model, Id = ("Arm" .. #specs) :: any }
+		elseif action == "RemoveArm" and armIndex then
+			table.remove(specs, armIndex)
+			model:SetAttribute("Arms", RoadMath.serializeArms(specs))
+			fitRoundaboutSize(model)
+			-- The later arms move up a number: re-point their joined roads,
+			-- and leave the removed arm's road where it is
+			local remapped = {}
+			for _, conn in connections do
+				local connIndex = RoadMath.armIndex(conn.EndId)
+				if connIndex and connIndex ~= armIndex then
+					local newIndex = if connIndex > armIndex then connIndex - 1 else connIndex
+					table.insert(remapped, { Ref = conn.Ref, EndId = ("Arm" .. newIndex) :: any })
+				end
+			end
+			connections = remapped
+			selectedRef = { Model = model, Id = "Centre" }
+		elseif (action == "ArmExit" or action == "ArmEntry") and armIndex then
+			local spec = specs[armIndex]
+			local lanes = math.max(math.round(value), 0)
+			if action == "ArmExit" then
+				spec.Exit = lanes
+			else
+				spec.Entry = lanes
+			end
+			if spec.Exit + spec.Entry < 1 then
+				spec.Exit, spec.Entry = math.max(spec.Exit, 1), spec.Entry
+			end
+			model:SetAttribute("Arms", RoadMath.serializeArms(specs))
+			fitRoundaboutSize(model)
+		elseif action == "ArmAngle" and armIndex then
+			specs[armIndex].Angle = value % 360
+			model:SetAttribute("Arms", RoadMath.serializeArms(specs))
+			fitRoundaboutSize(model)
+		elseif action == "ArmLength" or action == "SplitterWidth" or action == "EntryKerbRadius" then
+			model:SetAttribute(action, math.max(value, if action == "ArmLength" then 1 else 0))
+			fitRoundaboutSize(model)
+		elseif action == "Shape" and ISLAND_SHAPES[value] then
 			model:SetAttribute("IslandShape", ISLAND_SHAPES[value])
 			fitRoundaboutSize(model)
 			selectedCorner = nil
@@ -1681,6 +1799,7 @@ local function createRoadSession(plugin: Plugin)
 			model:SetAttribute(action, math.max(value, 0))
 			fitRoundaboutSize(model)
 		end
+		reseatConnectedEnds(model, connections)
 		finishRecording()
 		updateDragger()
 		changeSignal:Fire()
@@ -1865,17 +1984,28 @@ local function createRoadSession(plugin: Plugin)
 		}),
 		IslandShapeHandles.new(draggerContext, {
 			GetRoundabout = function()
-				local model, layout = getSelectedRoundabout()
+				local model, layout, armIndex = getSelectedRoundabout()
 				if not model or not layout then
 					return nil
 				end
+				local centroidX, centroidZ = RoadMath.islandCentroid(layout.Circles)
+				local arm = if armIndex then layout.Arms[armIndex] else nil
 				return {
 					Model = model,
 					Pivot = model:GetPivot(),
 					Circles = layout.Circles,
 					Selected = getSelectedCornerIndex(model, layout),
+					CentroidX = centroidX,
+					CentroidZ = centroidZ,
+					Arm = armIndex,
+					ArmAngle = if arm then arm.Angle else nil,
+					-- The arm's mouth: where its axis meets the ring's outer edge
+					ArmKnob = if arm
+						then Vector3.new(arm.AttachX + arm.NX * layout.RingWidth, 0, arm.AttachZ + arm.NZ * layout.RingWidth)
+						else nil,
 				}
 			end,
+			MoveArm = moveArm,
 			SelectCorner = function(index: number)
 				local model = getSelectedRoundabout()
 				if model then
@@ -2019,6 +2149,7 @@ local function createRoadSession(plugin: Plugin)
 		local roundaboutCorner = if roundabout
 			then getSelectedCornerIndex(selected.Segment.Model, roundabout)
 			else nil
+		local roundaboutArm = if roundabout then RoadMath.armIndex(selected.Id) else nil
 		local canChangeLanes = RoadMath.supportsLaneChange(selected.Segment.Kind)
 		local sameLanes = not RoadMath.hasLaneChange(selected.Segment)
 		local lanesDiffer = false
@@ -2076,6 +2207,15 @@ local function createRoadSession(plugin: Plugin)
 				else nil,
 			RingLanes = if roundabout then roundabout.RingLanes else nil,
 			ApronWidth = if roundabout then roundabout.ApronWidth else nil,
+			ArmCount = if roundabout then #roundabout.Arms else nil,
+			ArmLength = if roundabout then roundabout.ArmLength else nil,
+			SplitterWidth = if roundabout then roundabout.SplitterWidth else nil,
+			EntryKerbRadius = if roundabout then roundabout.EntryKerbRadius else nil,
+			-- The selected arm, if an arm's end is selected
+			ArmIndex = roundaboutArm,
+			ArmExit = if roundabout and roundaboutArm then roundabout.Arms[roundaboutArm].Exit else nil,
+			ArmEntry = if roundabout and roundaboutArm then roundabout.Arms[roundaboutArm].Entry else nil,
+			ArmAngle = if roundabout and roundaboutArm then roundabout.Arms[roundaboutArm].Angle else nil,
 			LaneWidth = (selected.Segment.Model:GetAttribute("LaneWidth" .. laneAxisSuffix) :: number?) or RoadDefaults.LaneWidth,
 			SidewalkWidth = (selected.Segment.Model:GetAttribute("SidewalkWidth") :: number?) or RoadDefaults.SidewalkWidth,
 			IntersectionAngle = (selected.Segment.Model:GetAttribute("IntersectionAngle") :: number?) or RoadDefaults.IntersectionAngle,
@@ -2495,6 +2635,7 @@ local function createRoadSession(plugin: Plugin)
 		end
 		newModel:SetAttribute("IslandShape", ISLAND_SHAPES.Circle)
 		newModel:SetAttribute("RingLanes", RoadDefaults.RoundaboutRingLanes)
+		newModel:SetAttribute("Arms", RoadDefaults.RoundaboutArms)
 		fitRoundaboutSize(newModel)
 
 		local look = camera.CFrame.LookVector * Vector3.new(1, 0, 1)
@@ -2518,7 +2659,9 @@ local function createRoadSession(plugin: Plugin)
 
 	-- Panel actions on the selected roundabout: "Shape" (a preset name),
 	-- "AddCorner", "RemoveCorner", "CornerRadius", "RingLanes", "LaneWidth",
-	-- "SidewalkWidth", "ApronWidth"
+	-- "SidewalkWidth", "ApronWidth", "AddArm", "ArmLength", "SplitterWidth",
+	-- "EntryKerbRadius", and on the selected arm "RemoveArm", "ArmExit",
+	-- "ArmEntry", "ArmAngle"
 	session.RoundaboutAction = roundaboutAction
 
 	function session.Destroy()

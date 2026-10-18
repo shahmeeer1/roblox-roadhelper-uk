@@ -46,6 +46,19 @@ export type EndpointId =
 	-- A roundabout's centre: not an end that joins roads, just what selecting the
 	-- roundabout selects (see RoadMath.pickableEndpointIds)
 	| "Centre"
+	-- A roundabout's arms, numbered in the order they're listed
+	| "Arm1"
+	| "Arm2"
+	| "Arm3"
+	| "Arm4"
+	| "Arm5"
+	| "Arm6"
+	| "Arm7"
+	| "Arm8"
+	| "Arm9"
+	| "Arm10"
+	| "Arm11"
+	| "Arm12"
 
 -- Roundabouts (see the Roundabouts section): one circle of the island
 -- outline, in the roundabout's local (pivot) space
@@ -66,6 +79,32 @@ export type RoundaboutLayout = {
 	-- The raised apron inside the ring (0 for none), kept within the
 	-- smallest outline circle
 	ApronWidth: number,
+	-- The arms, and their shared length, splitter island width and entry kerb
+	-- radius
+	Arms: { RoundaboutArm },
+	ArmLength: number,
+	SplitterWidth: number,
+	EntryKerbRadius: number,
+}
+
+-- One of a roundabout's arms (see the Roundabouts section)
+export type RoundaboutArm = {
+	-- Where it is: the direction from the island's centroid, in degrees
+	-- (atan2(z, x) in the local XZ plane)
+	Angle: number,
+	-- Lanes leaving the roundabout, and lanes entering it
+	Exit: number,
+	Entry: number,
+	-- Where its axis meets the island outline, and the outline's outward
+	-- normal there (the arm's direction)
+	AttachX: number,
+	AttachZ: number,
+	NX: number,
+	NZ: number,
+	-- Its end (the road end that joins roads), and the width there
+	EndX: number,
+	EndZ: number,
+	EndWidth: number,
 }
 
 -- One arc of a roundabout outline: a circle's boundary from angle From to To
@@ -242,6 +281,14 @@ end
 
 -- The forward/backward lane counts at one end of a segment
 local function readEndLaneCounts(kind: SegmentKind, model: Instance, id: EndpointId): (number, number)
+	local armIndex = RoadMath.armIndex(id)
+	if kind == "Roundabout" and armIndex then
+		-- Forward is leaving the roundabout
+		local arm = RoadMath.roundaboutLayout(model).Arms[armIndex]
+		if arm then
+			return arm.Exit, arm.Entry
+		end
+	end
 	if kind == "Split" and (id == "BranchLeft" or id == "BranchRight") then
 		local layout = RoadMath.splitLayout(model)
 		if id == "BranchLeft" then
@@ -392,30 +439,170 @@ function RoadMath.serializeIslandShape(circles: { RoundaboutCircle }): string
 	return table.concat(entries, ";")
 end
 
+--[[
+	Arms (Arms, "angle,exit,entry;..."): roads joining the roundabout. An
+	arm sits where the ray from the island's centroid at its angle meets the
+	outline, and runs straight out along the outline's normal there, from
+	the ring's outer edge for ArmLength to its end: a normal road end with
+	Exit lanes leaving and Entry lanes arriving. Traffic keeps to the
+	DriveSide, so (driving on the left) looking out along the arm the exit
+	lanes are on the left. Near the ring the exit and entry lanes part
+	around a splitter island SplitterWidth wide; the arm's kerbs curve into
+	the ring's outer kerb with radius EntryKerbRadius.
+]]
+local MAX_ARMS = 12
+
+function RoadMath.parseArms(value: any): { { Angle: number, Exit: number, Entry: number } }
+	local arms = {}
+	if typeof(value) == "string" then
+		for _, entry in string.split(value, ";") do
+			local parts = string.split(entry, ",")
+			local angle, exit, entryLanes = tonumber(parts[1]), tonumber(parts[2]), tonumber(parts[3])
+			if angle and exit and entryLanes and #arms < MAX_ARMS then
+				exit, entryLanes = math.max(math.floor(exit), 0), math.max(math.floor(entryLanes), 0)
+				if exit + entryLanes < 1 then
+					exit, entryLanes = 1, 1
+				end
+				table.insert(arms, { Angle = angle, Exit = exit, Entry = entryLanes })
+			end
+		end
+	end
+	return arms
+end
+
+function RoadMath.serializeArms(arms: { { Angle: number, Exit: number, Entry: number } }): string
+	local entries = {}
+	for _, arm in arms do
+		table.insert(entries, `{math.round(arm.Angle * 100) / 100},{arm.Exit},{arm.Entry}`)
+	end
+	return table.concat(entries, ";")
+end
+
+-- Points around the island outline ("stations") with the outward normal at
+-- each: the hull's arcs sampled at most 6 degrees apart, the straight
+-- tangent edges running between one arc's last station and the next arc's
+-- first (which share a normal). The generator samples identically.
+function RoadMath.roundaboutStations(circles: { RoundaboutCircle }): { { PX: number, PZ: number, NX: number, NZ: number } }
+	local step = math.rad(6)
+	local stations = {}
+	for _, piece in RoadMath.roundaboutHull(circles) do
+		local circle = piece.Circle
+		local steps = math.max(math.ceil((piece.To - piece.From) / step), 1)
+		for k = 0, steps do
+			local angle = piece.From + (piece.To - piece.From) * k / steps
+			local nx, nz = math.cos(angle), math.sin(angle)
+			table.insert(stations, {
+				PX = circle.X + nx * circle.Radius,
+				PZ = circle.Z + nz * circle.Radius,
+				NX = nx,
+				NZ = nz,
+			})
+		end
+	end
+	return stations
+end
+
+-- Where the ray from (cx, cz) at an angle (radians) leaves the outline, and
+-- the outward normal there
+function RoadMath.outlineHit(stations, cx: number, cz: number, angle: number): (number, number, number, number)
+	local dx, dz = math.cos(angle), math.sin(angle)
+	local bestT, hitX, hitZ, hitNX, hitNZ = math.huge, cx, cz, dx, dz
+	for i = 1, #stations do
+		local a, b = stations[i], stations[i % #stations + 1]
+		local ex, ez = b.PX - a.PX, b.PZ - a.PZ
+		local denominator = dx * ez - dz * ex
+		if math.abs(denominator) > 1e-9 then
+			local wx, wz = a.PX - cx, a.PZ - cz
+			local t = (wx * ez - wz * ex) / denominator
+			local s = (wx * dz - wz * dx) / denominator
+			if t > 0 and s >= -1e-9 and s <= 1 + 1e-9 and t < bestT then
+				bestT = t
+				hitX, hitZ = cx + dx * t, cz + dz * t
+				local nx, nz = a.NX + (b.NX - a.NX) * s, a.NZ + (b.NZ - a.NZ) * s
+				local length = math.sqrt(nx * nx + nz * nz)
+				hitNX, hitNZ = nx / length, nz / length
+			end
+		end
+	end
+	return hitX, hitZ, hitNX, hitNZ
+end
+
+-- The island's centroid: the mean of its circle centres, always inside it
+function RoadMath.islandCentroid(circles: { RoundaboutCircle }): (number, number)
+	local cx, cz = 0, 0
+	for _, circle in circles do
+		cx += circle.X
+		cz += circle.Z
+	end
+	return cx / #circles, cz / #circles
+end
+
 function RoadMath.roundaboutLayout(model: Instance): RoundaboutLayout
 	local circles = RoadMath.parseIslandShape(model:GetAttribute("IslandShape"))
 	local lanes = math.max(math.floor(getNumberAttribute(model, "RingLanes", RoadDefaults.RoundaboutRingLanes)), 1)
 	local laneWidth = getNumberAttribute(model, "LaneWidth", RoadDefaults.LaneWidth)
+	local sidewalkWidth = math.max(getNumberAttribute(model, "SidewalkWidth", RoadDefaults.SidewalkWidth), 0)
+	local ringWidth = lanes * laneWidth
+	local armLength = math.max(getNumberAttribute(model, "ArmLength", RoadDefaults.RoundaboutArmLength), 1)
 	local smallest = math.huge
 	for _, circle in circles do
 		smallest = math.min(smallest, circle.Radius)
 	end
+
+	local stations = RoadMath.roundaboutStations(circles)
+	local cx, cz = RoadMath.islandCentroid(circles)
+	local exitSide = if model:GetAttribute("DriveSide") == "Right" then -1 else 1
+	local arms: { RoundaboutArm } = {}
+	-- No attribute at all means the generator's default arms ("" is none)
+	local armsValue = model:GetAttribute("Arms")
+	if armsValue == nil then
+		armsValue = RoadDefaults.RoundaboutArms
+	end
+	for _, arm in RoadMath.parseArms(armsValue) do
+		local px, pz, nx, nz = RoadMath.outlineHit(stations, cx, cz, math.rad(arm.Angle))
+		-- Looking out along the arm, +T is the left
+		local tx, tz = nz, -nx
+		-- The end is centred on its roadway: the exit lanes one side of the
+		-- arm's axis, the entry lanes the other
+		local centre = exitSide * (arm.Exit - arm.Entry) * laneWidth / 2
+		local reach = ringWidth + armLength
+		table.insert(arms, {
+			Angle = arm.Angle,
+			Exit = arm.Exit,
+			Entry = arm.Entry,
+			AttachX = px,
+			AttachZ = pz,
+			NX = nx,
+			NZ = nz,
+			EndX = px + nx * reach + tx * centre,
+			EndZ = pz + nz * reach + tz * centre,
+			EndWidth = (arm.Exit + arm.Entry) * laneWidth + 2 * sidewalkWidth,
+		})
+	end
+
 	return {
 		Circles = circles,
 		RingLanes = lanes,
 		LaneWidth = laneWidth,
-		RingWidth = lanes * laneWidth,
-		SidewalkWidth = math.max(getNumberAttribute(model, "SidewalkWidth", RoadDefaults.SidewalkWidth), 0),
+		RingWidth = ringWidth,
+		SidewalkWidth = sidewalkWidth,
 		ApronWidth = math.clamp(
 			getNumberAttribute(model, "ApronWidth", RoadDefaults.RoundaboutApronWidth),
 			0,
 			math.max(smallest - 1, 0)
 		),
+		Arms = arms,
+		ArmLength = armLength,
+		SplitterWidth = math.max(getNumberAttribute(model, "SplitterWidth", RoadDefaults.RoundaboutSplitterWidth), 0),
+		EntryKerbRadius = math.max(
+			getNumberAttribute(model, "EntryKerbRadius", RoadDefaults.RoundaboutEntryKerbRadius),
+			sidewalkWidth + 2
+		),
 	}
 end
 
 -- The box a roundabout needs around its pivot (it's laid out symmetrically,
--- since the outline circles are in pivot space)
+-- since the outline circles are in pivot space), arms included
 function RoadMath.roundaboutSize(layout: RoundaboutLayout): Vector3
 	local outer = layout.RingWidth + layout.SidewalkWidth
 	local extentX, extentZ = 0, 0
@@ -423,7 +610,17 @@ function RoadMath.roundaboutSize(layout: RoundaboutLayout): Vector3
 		extentX = math.max(extentX, math.abs(circle.X) + circle.Radius + outer)
 		extentZ = math.max(extentZ, math.abs(circle.Z) + circle.Radius + outer)
 	end
+	for _, arm in layout.Arms do
+		extentX = math.max(extentX, math.abs(arm.EndX) + arm.EndWidth / 2)
+		extentZ = math.max(extentZ, math.abs(arm.EndZ) + arm.EndWidth / 2)
+	end
 	return Vector3.new(2 * extentX, 0, 2 * extentZ)
+end
+
+-- The arm index of a roundabout end id ("Arm3" -> 3), or nil
+function RoadMath.armIndex(id: EndpointId): number?
+	local digits = string.match(id, "^Arm(%d+)$")
+	return if digits then tonumber(digits) else nil
 end
 
 --[[
@@ -699,10 +896,17 @@ end
 
 function RoadMath.getEndpoint(segment: SegmentInfo, id: EndpointId): Endpoint
 	local localFrame
+	local armIndex = RoadMath.armIndex(id)
 	if id == "Centre" then
 		-- Facing straight up, so it can never pass for a joint with a road end
 		local position = Vector3.new(0, -segment.Size.Y / 2, 0)
 		localFrame = CFrame.lookAt(position, position + Vector3.yAxis, Vector3.zAxis)
+	elseif armIndex and segment.Roundabout and segment.Roundabout.Arms[armIndex] then
+		local arm = segment.Roundabout.Arms[armIndex]
+		localFrame = CFrame.lookAlong(
+			Vector3.new(arm.EndX, -segment.Size.Y / 2, arm.EndZ),
+			Vector3.new(arm.NX, 0, arm.NZ)
+		)
 	elseif segment.Kind == "Intersection" then
 		localFrame = intersectionEndpointFrame(segment, id)
 	elseif segment.Kind == "Split" then
@@ -732,8 +936,11 @@ function RoadMath.endpointIds(segment: SegmentInfo): { EndpointId }
 	elseif segment.Kind == "Split" then
 		return { "Stem", "BranchLeft", "BranchRight" }
 	elseif segment.Kind == "Roundabout" then
-		-- No arms yet, so no ends that join roads
-		return {}
+		local ids: { EndpointId } = {}
+		for index in assert(segment.Roundabout).Arms do
+			table.insert(ids, ("Arm" .. index) :: any)
+		end
+		return ids
 	end
 	return { "Blue", "Red" }
 end
@@ -767,7 +974,13 @@ end
 -- Whether forward traffic leaves the segment through this end: a road's red
 -- end, an intersection's Plus exits, or a Y split's branches
 function RoadMath.isForwardEnd(id: EndpointId): boolean
-	return id == "Red" or id == "ZPlus" or id == "XPlus" or id == "BranchLeft" or id == "BranchRight"
+	-- (A roundabout arm's "forward" lanes are its exit lanes)
+	return id == "Red"
+		or id == "ZPlus"
+		or id == "XPlus"
+		or id == "BranchLeft"
+		or id == "BranchRight"
+		or RoadMath.armIndex(id) ~= nil
 end
 
 -- Which road of its segment an end belongs to, as a lane attribute suffix
@@ -820,6 +1033,10 @@ function RoadMath.endpointWidth(endpoint: Endpoint): number
 	elseif endpoint.Id == "BranchLeft" or endpoint.Id == "BranchRight" then
 		local layout = assert(endpoint.Segment.Split)
 		return if endpoint.Id == "BranchLeft" then layout.LeftWidth else layout.RightWidth
+	end
+	local armIndex = RoadMath.armIndex(endpoint.Id)
+	if armIndex and endpoint.Segment.Roundabout and endpoint.Segment.Roundabout.Arms[armIndex] then
+		return endpoint.Segment.Roundabout.Arms[armIndex].EndWidth
 	end
 	return endpoint.Segment.Width
 end
