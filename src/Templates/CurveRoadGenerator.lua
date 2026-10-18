@@ -32,6 +32,9 @@ local defaultAttributes = {
 	AdjustShowSnappingHelper = false,
 	TextureLaneMarkings = false,
 	HaveLaneMarkings = true,
+	-- "Left" (UK) or "Right". Not used by this generator yet; carried so it
+	-- propagates along the network to the generators that use it.
+	DriveSide = "Left",
 	RoadMaterial = Enum.Material.Concrete,
 	CenterlineColor = Color3.fromRGB(244, 205, 47),
 	LaneMarkingColor = Color3.fromRGB(163, 161, 165),

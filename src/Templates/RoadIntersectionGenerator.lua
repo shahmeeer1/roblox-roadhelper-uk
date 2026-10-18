@@ -29,6 +29,9 @@ local defaultAttributes = {
 	BlendAngle = 30,
 	HaveLaneMarkings = true,
 	TextureLaneMarkings = false,
+	-- "Left" (UK) or "Right": which side traffic drives on, deciding which
+	-- lanes are the approach lanes the stop bars cross
+	DriveSide = "Left",
 	AdjustShowSnappingHelper = false,
 	RoadMaterial = Enum.Material.Concrete,
 	CenterlineColor = Color3.fromRGB(244, 205, 47),
@@ -128,6 +131,8 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 		-- junction: the straight Z road becomes the continuous crossbar, and
 		-- the ANGLED X road is the side road approaching from the +X side only
 		local throughRoad = if attributes.ThroughRoad ~= nil then attributes.ThroughRoad else true
+		-- +1 when traffic keeps right, -1 when it keeps left (the default)
+		local driveSideSign = if attributes.DriveSide == "Right" then 1 else -1
 		local roadMaterial = attributes.RoadMaterial or ROAD_MATERIAL
 		local roadMaterialVariant = if roadMaterial == ROAD_MATERIAL then ROAD_MATERIAL_VARIANT else ""
 
@@ -529,10 +534,11 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 							markingStrip(base + dir * tMarks, base + dir * tFace, marking.color, MARK_WIDTH)
 						end
 					end
-					-- Stop bar square across the approach (right-hand) lanes
+					-- Stop bar square across the approach lanes: those on the
+					-- inbound traffic's driving side
 					local inbound = -dir
 					local rightDir = Vector3.new(-inbound.Z, 0, inbound.X)
-					local latSign = math.sign(rightDir:Dot(n))
+					local latSign = math.sign(rightDir:Dot(n)) * driveSideSign
 					local latA = latSign * (CENTER_OFFSET + 1)
 					local latB = latSign * (edgeLine - 1.5)
 					markingStrip(n * latA + dir * tBar, n * latB + dir * tBar, laneMarkingColor, STOP_LINE_WIDTH)
