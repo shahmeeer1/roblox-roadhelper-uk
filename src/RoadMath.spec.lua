@@ -640,4 +640,100 @@ return function(t: TestTypes.TestContext)
 		t.expect(farOut).toBe(2)
 		t.expect(farIn).toBe(1)
 	end)
+
+	--
+	-- Lane changes
+	--
+
+	t.test("lane change: red overrides need both counts, and only apply to straights", function()
+		local seg = makeSegment("Straight", Vector3.new(WIDTH, 0, 200), CFrame.identity)
+		local attrs = (seg.Model :: any).attrs
+		attrs.LaneCountForward = 2
+		attrs.LaneCountBackward = 2
+		attrs.LaneCountForwardRed = 1
+		-- Only one override: not a lane change yet
+		t.expect(RoadMath.hasLaneChange(seg)).toBe(false)
+		local lanesOut, lanesIn = RoadMath.getLaneCounts(RoadMath.getEndpoint(seg, "Red"))
+		t.expect(lanesOut).toBe(2)
+		t.expect(lanesIn).toBe(2)
+
+		attrs.LaneCountBackwardRed = 2
+		t.expect(RoadMath.hasLaneChange(seg)).toBe(true)
+		lanesOut, lanesIn = RoadMath.getLaneCounts(RoadMath.getEndpoint(seg, "Red"))
+		t.expect(lanesOut).toBe(1)
+		t.expect(lanesIn).toBe(2)
+		-- The blue end keeps the base counts
+		lanesOut, lanesIn = RoadMath.getLaneCounts(RoadMath.getEndpoint(seg, "Blue"))
+		t.expect(lanesOut).toBe(2)
+		t.expect(lanesIn).toBe(2)
+		-- Single-end writes at red go to the overrides
+		local outName, inName = RoadMath.endLaneAttributeNames(seg, "Red")
+		t.expect(outName).toBe("LaneCountForwardRed")
+		t.expect(inName).toBe("LaneCountBackwardRed")
+
+		-- Curves ignore the overrides
+		local curve = makeSegment("Curve", Vector3.new(128, 0, 128), CFrame.identity);
+		(curve.Model :: any).attrs = table.clone(attrs)
+		t.expect(RoadMath.hasLaneChange(curve)).toBe(false)
+		lanesOut = RoadMath.getLaneCounts(RoadMath.getEndpoint(curve, "Red"))
+		t.expect(lanesOut).toBe(2)
+	end)
+
+	t.test("lane change: endpoints and moves lay the box out around the wider end", function()
+		-- Blue 64 wide, red 88 wide, box X 108: sway = (108 - 88) / 2 = 10
+		local seg = makeSegment("Straight", Vector3.new(108, 0, 200), CFrame.identity)
+		seg.WidthRed = 88
+		t.expect(RoadMath.endpointWidth(RoadMath.getEndpoint(seg, "Red"))).toBe(88)
+		t.expect(RoadMath.endpointWidth(RoadMath.getEndpoint(seg, "Blue"))).toBe(WIDTH)
+		local blue, red = RoadMath.getEndpoints(seg)
+		expectFuzzy(t, blue.WorldCFrame.Position, Vector3.new(-10, 0, -100))
+		expectFuzzy(t, red.WorldCFrame.Position, Vector3.new(10, 0, 100))
+
+		local target = Vector3.new(30, 0, 100)
+		local solution = RoadMath.solveMove(seg, "Red", target)
+		t.expect(solution.Size.X).toBe(88 + 40)
+		local moved = makeSegment("Straight", solution.Size, solution.Pivot, solution.Flip)
+		moved.WidthRed = 88
+		local movedBlue, movedRed = RoadMath.getEndpoints(moved)
+		expectFuzzy(t, movedBlue.WorldCFrame.Position, blue.WorldCFrame.Position)
+		expectFuzzy(t, movedRed.WorldCFrame.Position, target)
+	end)
+
+	t.test("solveWidthChange: one end widening keeps both endpoints fixed", function()
+		local seg = makeSegment("Straight", Vector3.new(100, 0, 200), CFrame.identity)
+		local blue, red = RoadMath.getEndpoints(seg)
+		local solution = RoadMath.solveWidthChange(seg, WIDTH, 88)
+		local resized = makeSegment("Straight", solution.Size, solution.Pivot)
+		resized.WidthRed = 88
+		local newBlue, newRed = RoadMath.getEndpoints(resized)
+		expectFuzzy(t, newBlue.WorldCFrame.Position, blue.WorldCFrame.Position)
+		expectFuzzy(t, newRed.WorldCFrame.Position, red.WorldCFrame.Position)
+	end)
+
+	t.test("laneChangeShift: the other direction's kerb stays put", function()
+		local seg = makeSegment("Straight", Vector3.new(96, 0, 200), CFrame.identity)
+		-- Red end faces +Z; looking out of it, right is -X. Driving on the
+		-- left, the lanes leaving through red are on the +X side. Dropping
+		-- one 24-stud lane there must keep the -X (right) kerb in place.
+		local red = RoadMath.getEndpoint(seg, "Red")
+		local right = red.WorldCFrame.RightVector
+		local shift = RoadMath.laneChangeShift(red, true, -24)
+		expectFuzzy(t, shift, Vector3.new(-12, 0, 0))
+		local kerbBefore = red.WorldCFrame.Position + right * (96 / 2)
+		local kerbAfter = red.WorldCFrame.Position + shift + right * (72 / 2)
+		expectFuzzy(t, kerbAfter, kerbBefore)
+
+		-- Blue end faces -Z (right is +X); gaining a lane entering through it
+		-- (the right-hand side) keeps the left (-X) kerb in place
+		local blue = RoadMath.getEndpoint(seg, "Blue")
+		local blueRight = blue.WorldCFrame.RightVector
+		local blueShift = RoadMath.laneChangeShift(blue, false, 24)
+		local leftBefore = blue.WorldCFrame.Position - blueRight * (96 / 2)
+		local leftAfter = blue.WorldCFrame.Position + blueShift - blueRight * (120 / 2)
+		expectFuzzy(t, leftAfter, leftBefore);
+
+		-- Driving on the right mirrors it
+		(seg.Model :: any).attrs.DriveSide = "Right"
+		expectFuzzy(t, RoadMath.laneChangeShift(red, true, -24), Vector3.new(12, 0, 0))
+	end)
 end

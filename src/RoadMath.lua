@@ -17,7 +17,8 @@
 	  (see the Lanes section for the per-direction counts)
 	- Straight: blue at local (-fs*sway, -Y/2, -Z/2) facing -Z, red at
 	  (fs*sway, +Y/2, +Z/2) facing +Z, fs = Flip and -1 or 1,
-	  sway = max((X - width)/2, 0). The road always climbs blue -> red.
+	  sway = max((X - width)/2, 0), width being the wider end's on a
+	  lane-change straight. The road always climbs blue -> red.
 	- Curve: blue at (-X/2 + w, blueY, -Z/2) facing -Z, red at
 	  (X/2, redY, Z/2 - w) facing +X, w = width/2. Flip swaps which end is
 	  at the top of the box vertically (blue is the top when Flip).
@@ -36,7 +37,10 @@ export type EndpointId = "Blue" | "Red" | "ZPlus" | "ZMinus" | "XPlus" | "XMinus
 export type SegmentInfo = {
 	Model: Model, -- Actually a ProceduralModel
 	Kind: SegmentKind,
+	-- The road width (at the blue end, for a straight with a lane change)
 	Width: number,
+	-- A lane-change straight's red end width, when it differs from the blue
+	WidthRed: number?,
 	Size: Vector3,
 	Pivot: CFrame,
 	Flip: boolean,
@@ -99,6 +103,13 @@ end
 	its own pair suffixed X or Z, with forward running toward that road's
 	Plus exit. Either count may be zero (a one-way road), but there is always
 	at least one lane in all, matching the generators.
+
+	A straight can change lanes along its length: LaneCountForwardRed /
+	LaneCountBackwardRed then override the counts at its red end (the base
+	pair applies at the blue end). The overrides are only in effect when
+	both are present, and only on straights; with neither, the segment has
+	the same lanes at both ends. LaneChangeSide ("Offside" by default, or
+	"Nearside") says which lane of a changing direction ends or starts.
 ]]
 function RoadMath.sanitizeLaneCounts(forward: number, backward: number): (number, number)
 	local f = math.max(math.floor(forward), 0)
@@ -126,6 +137,37 @@ end
 local function totalLanes(model: Instance, suffix: string): number
 	local forward, backward = readLaneCounts(model, suffix)
 	return forward + backward
+end
+
+-- The red-end lane count overrides of a lane-change straight
+RoadMath.RED_LANE_OVERRIDES = { "LaneCountForwardRed", "LaneCountBackwardRed" }
+
+-- Whether a segment kind can have different lanes at each end
+function RoadMath.supportsLaneChange(kind: SegmentKind): boolean
+	return kind == "Straight"
+end
+
+local function redOverridesActive(kind: SegmentKind, model: Instance): boolean
+	return RoadMath.supportsLaneChange(kind)
+		and typeof(model:GetAttribute(RoadMath.RED_LANE_OVERRIDES[1])) == "number"
+		and typeof(model:GetAttribute(RoadMath.RED_LANE_OVERRIDES[2])) == "number"
+end
+
+-- Whether the segment has its own lane counts at the red end ("Same at both
+-- ends" off)
+function RoadMath.hasLaneChange(segment: SegmentInfo): boolean
+	return redOverridesActive(segment.Kind, segment.Model)
+end
+
+-- The forward/backward lane counts at one end of a segment
+local function readEndLaneCounts(kind: SegmentKind, model: Instance, id: EndpointId): (number, number)
+	if id == "Red" and redOverridesActive(kind, model) then
+		return RoadMath.sanitizeLaneCounts(
+			model:GetAttribute(RoadMath.RED_LANE_OVERRIDES[1]) :: number,
+			model:GetAttribute(RoadMath.RED_LANE_OVERRIDES[2]) :: number
+		)
+	end
+	return readLaneCounts(model, RoadMath.laneSuffix(kind, id))
 end
 
 function RoadMath.getSegmentInfo(instance: Instance): SegmentInfo?
@@ -162,10 +204,15 @@ function RoadMath.getSegmentInfo(instance: Instance): SegmentInfo?
 		}
 	end
 	local laneWidth = getNumberAttribute(model, "LaneWidth", RoadDefaults.LaneWidth)
+	local blueForward, blueBackward = readEndLaneCounts(kind, model, "Blue")
+	local redForward, redBackward = readEndLaneCounts(kind, model, "Red")
+	local blueWidth = (blueForward + blueBackward) * laneWidth + 2 * sidewalkWidth
+	local redWidth = (redForward + redBackward) * laneWidth + 2 * sidewalkWidth
 	return {
 		Model = model,
 		Kind = kind,
-		Width = totalLanes(model, "") * laneWidth + 2 * sidewalkWidth,
+		Width = blueWidth,
+		WidthRed = if redWidth ~= blueWidth then redWidth else nil,
 		Size = (model :: any).Size :: Vector3,
 		Pivot = model:GetPivot(),
 		Flip = model:GetAttribute("Flip") == true,
@@ -257,7 +304,7 @@ function RoadMath.getEndpoint(segment: SegmentInfo, id: EndpointId): Endpoint
 	if segment.Kind == "Intersection" then
 		localFrame = intersectionEndpointFrame(segment, id)
 	else
-		localFrame = RoadMath.localEndpointFrame(segment.Kind, segment.Size, segment.Width, segment.Flip, id)
+		localFrame = RoadMath.localEndpointFrame(segment.Kind, segment.Size, RoadMath.boxWidth(segment), segment.Flip, id)
 	end
 	return {
 		Segment = segment,
@@ -306,7 +353,8 @@ function RoadMath.laneSuffix(kind: SegmentKind, id: EndpointId): string
 end
 
 -- The attributes holding the lanes leaving the segment through an end
--- ("out") and the lanes entering it there ("in")
+-- ("out") and the lanes entering it there ("in"), for the whole road: on a
+-- road segment these set both ends' lanes (unless it has a lane change)
 function RoadMath.laneAttributeNames(kind: SegmentKind, id: EndpointId): (string, string)
 	local forwardName, backwardName = RoadMath.laneCountNames(RoadMath.laneSuffix(kind, id))
 	if RoadMath.isForwardEnd(id) then
@@ -315,10 +363,19 @@ function RoadMath.laneAttributeNames(kind: SegmentKind, id: EndpointId): (string
 	return backwardName, forwardName
 end
 
+-- Like laneAttributeNames, but the attributes for just this end: the red-end
+-- overrides at the red end of a straight with a lane change
+function RoadMath.endLaneAttributeNames(segment: SegmentInfo, id: EndpointId): (string, string)
+	if id == "Red" and RoadMath.hasLaneChange(segment) then
+		-- Red is a forward end: out = forward, in = backward
+		return RoadMath.RED_LANE_OVERRIDES[1], RoadMath.RED_LANE_OVERRIDES[2]
+	end
+	return RoadMath.laneAttributeNames(segment.Kind, id)
+end
+
 -- The lanes leaving (out) and entering (in) the segment through an end
 function RoadMath.getLaneCounts(endpoint: Endpoint): (number, number)
-	local suffix = RoadMath.laneSuffix(endpoint.Segment.Kind, endpoint.Id)
-	local forward, backward = readLaneCounts(endpoint.Segment.Model, suffix)
+	local forward, backward = readEndLaneCounts(endpoint.Segment.Kind, endpoint.Segment.Model, endpoint.Id)
 	if RoadMath.isForwardEnd(endpoint.Id) then
 		return forward, backward
 	end
@@ -326,12 +383,37 @@ function RoadMath.getLaneCounts(endpoint: Endpoint): (number, number)
 end
 
 -- The road width at an endpoint (an intersection's X road can be a
--- different width than its Z road)
+-- different width than its Z road, and a lane-change straight's ends can
+-- differ)
 function RoadMath.endpointWidth(endpoint: Endpoint): number
 	if endpoint.Id == "XPlus" or endpoint.Id == "XMinus" then
 		return endpoint.Segment.WidthX or endpoint.Segment.Width
+	elseif endpoint.Id == "Red" then
+		return endpoint.Segment.WidthRed or endpoint.Segment.Width
 	end
 	return endpoint.Segment.Width
+end
+
+-- The width a road segment's bounding box is laid out around: the wider of
+-- its two ends (they only differ on a lane-change straight)
+function RoadMath.boxWidth(segment: SegmentInfo): number
+	return math.max(segment.Width, segment.WidthRed or segment.Width)
+end
+
+--[[
+	The sideways shift of an end's centre which, after one direction's lanes
+	at that end change width by deltaWidth, keeps the kerb on the OTHER
+	direction's side exactly where it was (so the untouched direction runs
+	straight through a lane change). Looking out of an end, the lanes
+	leaving through it keep to the driving side: the left for
+	DriveSide = "Left".
+]]
+function RoadMath.laneChangeShift(endpoint: Endpoint, changedOut: boolean, deltaWidth: number): Vector3
+	local frame = RoadMath.actualEndpointFrame(endpoint)
+	local driveLeft = endpoint.Segment.Model:GetAttribute("DriveSide") ~= "Right"
+	local outSide = if driveLeft then -frame.RightVector else frame.RightVector
+	local changedSide = if changedOut then outSide else -outSide
+	return changedSide * (deltaWidth / 2)
 end
 
 -- The effective world yaw (radians) of an end's Dir adjust. Intersection
@@ -430,7 +512,8 @@ function RoadMath.solveMove(segment: SegmentInfo, movedId: EndpointId, newWorldP
 		delta = Vector3.new(delta.X, -delta.Y, delta.Z)
 	end
 
-	local width = segment.Width
+	-- A straight's box is laid out around its wider end
+	local width = RoadMath.boxWidth(segment)
 	local newSize: Vector3
 	local newFlip: boolean
 	if segment.Kind == "Straight" then
@@ -653,22 +736,30 @@ end
 	Compensate the bounds (and pivot) for a road width change so that BOTH
 	endpoint positions stay exactly where they are (keeping any joints sealed).
 
-	Straight: endpoints sit at (±sway, ·, ±Z/2) with sway = (X - width)/2, so
-	growing X by the width delta keeps sway (and both endpoints) unchanged.
+	Straight: endpoints sit at (±sway, ·, ±Z/2) with sway = (X - box)/2, where
+	box is the wider end's width, so growing X by the box width delta keeps
+	sway (and both endpoints) unchanged. newWidthRed gives a lane-change
+	straight's new red end width (omit it when both ends match).
 
 	Curve: blue sits at (-X/2 + w/2, ·, -Z/2) and red at (X/2, ·, Z/2 - w/2)
 	in pivot space. Solving both fixed under a delta d gives X' = X + d/2,
 	Z' = Z + d/2, with the pivot (box centre) shifted by (-d/4, 0, d/4).
 ]]
-function RoadMath.solveWidthChange(segment: SegmentInfo, newWidth: number): { Size: Vector3, Pivot: CFrame }
-	local delta = newWidth - segment.Width
+function RoadMath.solveWidthChange(
+	segment: SegmentInfo,
+	newWidth: number,
+	newWidthRed: number?
+): { Size: Vector3, Pivot: CFrame }
 	local size = segment.Size
 	if segment.Kind == "Straight" then
+		local newBox = math.max(newWidth, newWidthRed or newWidth)
+		local delta = newBox - RoadMath.boxWidth(segment)
 		return {
-			Size = Vector3.new(math.max(size.X + delta, newWidth), size.Y, size.Z),
+			Size = Vector3.new(math.max(size.X + delta, newBox), size.Y, size.Z),
 			Pivot = segment.Pivot,
 		}
 	else
+		local delta = newWidth - segment.Width
 		return {
 			Size = Vector3.new(size.X + delta / 2, size.Y, size.Z + delta / 2),
 			Pivot = segment.Pivot * CFrame.new(-delta / 4, 0, delta / 4),
