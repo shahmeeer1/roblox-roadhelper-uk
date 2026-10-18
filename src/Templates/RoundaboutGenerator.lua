@@ -552,8 +552,15 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 					local tb = (arm.CutPlus - la) / (lb - la)
 					t0, t1 = math.max(math.min(ta, tb), 0), math.min(math.max(ta, tb), 1)
 				end
-				-- Only the near side of the roundabout
-				if t0 and t1 > t0 and axialOf(arm, qa + (qb - qa) * ((t0 + t1) / 2)) > -ringWidth then
+				-- Only on the arm's side of the roundabout: where the outline
+				-- faces along the arm (its normal there has a positive
+				-- component in the arm's direction). The convex outline's
+				-- other crossings of the same lateral range face away. (A
+				-- skewed arm's fillet can touch the ring well behind its
+				-- mouth, so how far back a point is says nothing.)
+				local tm = (t0 or 0) + ((t1 or 0) - (t0 or 0)) / 2
+				local facing = (a.NX + (b.NX - a.NX) * tm) * arm.NX + (a.NZ + (b.NZ - a.NZ) * tm) * arm.NZ
+				if t0 and t1 > t0 and facing > 0 then
 					local remaining = {}
 					for _, piece in pieces do
 						if piece[2] <= t0 or piece[1] >= t1 then
