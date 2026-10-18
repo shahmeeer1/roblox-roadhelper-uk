@@ -505,27 +505,56 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 		end
 
 		-- Each side's kerb fillet: a circle of kerbRadius tangent to the arm's
-		-- side edge (at its ring end) and to the ring's outer edge, so its
-		-- centre lies on the outline offset by ringWidth + kerbRadius, where
-		-- that crosses the line kerbRadius beyond the arm's side
+		-- side edge and to the ring's outer edge.
+		-- * Where the arm's side line crosses the ring (the usual case) the
+		--   kerb turns into the corner between them: the circle sits outside
+		--   both roads, its centre on the outline offset by ringWidth +
+		--   kerbRadius where that crosses the line kerbRadius beyond the
+		--   arm's side. The road is outside the circle.
+		-- * Where the side line misses the ring altogether (the far side of a
+		--   strongly skewed arm), the kerb instead bulges out round the gap
+		--   between them: the circle sits inside the road, tangent to the
+		--   ring's outer edge from within (centre on the outline offset by
+		--   ringWidth - radius) and to the side from within (the line
+		--   radius inside the arm's side). The road is inside the circle.
+		local convexRadius = math.min(kerbRadius, ringWidth + smallest - 1)
 		for _, arm in arms do
 			arm.Fillets = {}
 			for _, side in { 1, -1 } do
 				local half = math.abs(outerAt(arm, side, 0))
-				local hit = crossing(arm, ringWidth + kerbRadius, side * (half + kerbRadius))
+				local corner = crossing(arm, ringWidth, side * half)
 				local fillet = nil
-				if hit then
-					local ring = hit.Point - Vector3.new(hit.NX, 0, hit.NZ) * kerbRadius
-					fillet = {
-						Centre = hit.Point,
-						Axial = hit.Axial,
-						Ring = ring,
-						RingLat = lateralOf(arm, ring),
-						Side = armPoint(arm, hit.Axial, side * half, 0),
-						-- The corner the fillet rounds off: where the arm's side
-						-- meets the ring's outer edge
-						Corner = (crossing(arm, ringWidth, side * half) or hit).Point,
-					}
+				if corner then
+					local hit = crossing(arm, ringWidth + kerbRadius, side * (half + kerbRadius))
+					if hit then
+						local ring = hit.Point - Vector3.new(hit.NX, 0, hit.NZ) * kerbRadius
+						fillet = {
+							Convex = false,
+							Radius = kerbRadius,
+							Centre = hit.Point,
+							Axial = hit.Axial,
+							Ring = ring,
+							RingLat = lateralOf(arm, ring),
+							Side = armPoint(arm, hit.Axial, side * half, 0),
+							-- The corner the fillet rounds off: where the arm's
+							-- side meets the ring's outer edge
+							Corner = corner.Point,
+						}
+					end
+				else
+					local hit = crossing(arm, ringWidth - convexRadius, side * (half - convexRadius))
+					if hit then
+						local ring = hit.Point + Vector3.new(hit.NX, 0, hit.NZ) * convexRadius
+						fillet = {
+							Convex = true,
+							Radius = convexRadius,
+							Centre = hit.Point,
+							Axial = hit.Axial,
+							Ring = ring,
+							RingLat = lateralOf(arm, ring),
+							Side = armPoint(arm, hit.Axial, side * half, 0),
+						}
+					end
 				end
 				arm.Fillets[side] = fillet
 			end
@@ -656,6 +685,14 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 			local edgeMinus = edgeAt(arm, -math.abs(outerAt(arm, -1, 0)))
 			local back = math.min(edgePlus, edgeMinus, 0)
 			local front = math.max(edgePlus, edgeMinus)
+			-- A bulging kerb meets the arm's side where its circle touches it,
+			-- which the arm's road must reach back to
+			for _, side in { 1, -1 } do
+				local fillet = arm.Fillets[side]
+				if fillet and fillet.Convex then
+					back = math.min(back, fillet.Axial)
+				end
+			end
 			-- The splitter island starts clear of the ring across its width
 			local islandStart = math.max(edgeAt(arm, arm.Splitter / 2), edgeAt(arm, -arm.Splitter / 2), 0)
 				+ ISLAND_START
@@ -723,27 +760,34 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 			end
 
 			-- The mouth's corners: each fillet's footway, and the road out to
-			-- its kerb, fanned from the corner it rounds off (where the arm's
-			-- side meets the ring's outer edge), which sees the whole arc
+			-- its kerb. A turning-in fillet's road is fanned from the corner it
+			-- rounds off (where the arm's side meets the ring's outer edge),
+			-- which sees the whole arc, with the footway inside the circle; a
+			-- bulging one's road is the circle's sector, fanned from its
+			-- centre, with the footway outside the circle.
 			for _, side in { 1, -1 } do
 				local fillet = arm.Fillets[side]
 				if fillet then
 					local c = fillet.Centre
+					local radius = fillet.Radius
 					local fromAngle = math.atan2(fillet.Ring.Z - c.Z, fillet.Ring.X - c.X)
 					local toAngle = math.atan2(fillet.Side.Z - c.Z, fillet.Side.X - c.X)
 					local sweep = (toAngle - fromAngle + math.pi) % (2 * math.pi) - math.pi
 					fillet.FromAngle, fillet.Sweep = fromAngle, sweep
-					local function onArc(k, radius, h)
+					local function onArc(k, r, h)
 						local angle = fromAngle + sweep * k / FILLET_STEPS
-						return Vector3.new(c.X + math.cos(angle) * radius, bottom + h, c.Z + math.sin(angle) * radius)
+						return Vector3.new(c.X + math.cos(angle) * r, bottom + h, c.Z + math.sin(angle) * r)
 					end
-					local corner = Vector3.new(fillet.Corner.X, bottom + hRoadTop, fillet.Corner.Z)
+					local hub = if fillet.Convex
+						then Vector3.new(c.X, bottom + hRoadTop, c.Z)
+						else Vector3.new(fillet.Corner.X, bottom + hRoadTop, fillet.Corner.Z)
+					local footwayInner = if fillet.Convex then radius else radius - sidewalkWidth
 					for k = 0, FILLET_STEPS - 1 do
-						tri(corner, onArc(k, kerbRadius, hRoadTop), onArc(k + 1, kerbRadius, hRoadTop),
+						tri(hub, onArc(k, radius, hRoadTop), onArc(k + 1, radius, hRoadTop),
 							roadColor, roadMaterial, roadMaterialVariant, ROAD_THICKNESS)
 						if sidewalkWidth > 0 then
-							quad(onArc(k, kerbRadius - sidewalkWidth, hSideTop), onArc(k, kerbRadius, hSideTop),
-								onArc(k + 1, kerbRadius, hSideTop), onArc(k + 1, kerbRadius - sidewalkWidth, hSideTop),
+							quad(onArc(k, footwayInner, hSideTop), onArc(k, footwayInner + sidewalkWidth, hSideTop),
+								onArc(k + 1, footwayInner + sidewalkWidth, hSideTop), onArc(k + 1, footwayInner, hSideTop),
 								sidewalkColor, SIDEWALK_MATERIAL, "", CURB_HEIGHT)
 						end
 					end
@@ -841,7 +885,9 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 						for k = 0, FILLET_STEPS - 1 do
 							local function onArc(step)
 								local angle = fillet.FromAngle + fillet.Sweep * step / FILLET_STEPS
-								local radius = kerbRadius + EDGE_INSET
+								-- Inset into the road: outside a turning-in
+								-- fillet's circle, inside a bulging one's
+								local radius = fillet.Radius + (if fillet.Convex then -EDGE_INSET else EDGE_INSET)
 								return Vector3.new(c.X + math.cos(angle) * radius, bottom + markHeight, c.Z + math.sin(angle) * radius)
 							end
 							strip(onArc(k), onArc(k + 1), laneColor, MARK_WIDTH, false)
