@@ -22,6 +22,11 @@ local RoadDefaults = {
 	-- Corner curve radius given to new intersections (path-like roads get
 	-- half a lane instead)
 	CornerRadius = 16,
+	-- Y splits: the gap between the two branch roads at the far end (about a
+	-- 2.4 m central reserve at 24 studs per 3.65 m lane), and the length of a
+	-- new split (about 36 m)
+	SplitSeparation = 16,
+	SplitLength = 240,
 }
 
 -- Total road width with the default lane layout

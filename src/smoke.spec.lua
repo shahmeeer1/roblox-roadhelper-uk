@@ -35,5 +35,6 @@ return function(t: TestTypes.TestContext)
 		require("./Templates/StraightRoadGenerator")
 		require("./Templates/CurveRoadGenerator")
 		require("./Templates/RoadIntersectionGenerator")
+		require("./Templates/RoadSplitGenerator")
 	end)
 end

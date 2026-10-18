@@ -22,6 +22,15 @@ return function(t: TestTypes.TestContext)
 		end
 	end)
 
+	t.test("split generator matches the defaults", function()
+		local attributes = require("./Templates/RoadSplitGenerator").Attributes
+		t.expect(attributes.LaneWidth).toBe(RoadDefaults.LaneWidth)
+		t.expect(attributes.LaneCountForward).toBe(RoadDefaults.LaneCountForward)
+		t.expect(attributes.LaneCountBackward).toBe(RoadDefaults.LaneCountBackward)
+		t.expect(attributes.SidewalkWidth).toBe(RoadDefaults.SidewalkWidth)
+		t.expect(attributes.SplitSeparation).toBe(RoadDefaults.SplitSeparation)
+	end)
+
 	t.test("intersection generator matches the defaults", function()
 		local attributes = require("./Templates/RoadIntersectionGenerator").Attributes
 		for _, axis in { "X", "Z" } do

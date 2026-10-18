@@ -111,6 +111,17 @@ lazy-loads `src/main.lua` on first activation.
   road runs at `IntersectionAngle` (clamped 25–155) from the Z road, its exits at ±X/2 along
   its own direction. `ThroughRoad = false` drops `XMinus` (T junction). Intersections are flat
   and have no Adjust angles.
+- Y splits (`RoadSplitGenerator`, kind `"Split"`, ends `Stem`/`BranchLeft`/`BranchRight`): one
+  road dividing into two. The stem (-Z face) joins the road; the branches leave the +Z face
+  side by side ("left" looking from the stem). The stem's lanes divide across the road:
+  `SplitLanesLeft` lanes from the left edge go left, the rest right, each keeping its direction
+  (default: a two-way road separates into its directions, a one-way road splits about in half).
+  `SplitSeparation` is the gap between the branch roads (outside footways) at the far end; the
+  split line is at local x = 0, and the layout depends only on attributes and Size.Z
+  (`RoadMath.splitLayout`, mirrored in the generator). The gore gets chevrons with solid
+  borders when both sides carry the same direction, diagonal hatching with broken borders
+  when they're opposite (Highway Code rule 130), then a raised island from the nose. Splits
+  are junctions (`RoadMath.isJunction`): flat, no adjust angles, moved as a whole.
 - The Adjust dir/grade/bank rotations all pivot about the endpoint centre point, so endpoint
   *positions* are invariant under angle edits — only move edits Size/pivot.
 - Joints are purely spatial: two ends within `RoadMath.JOINT_TOLERANCE` facing opposite ways.

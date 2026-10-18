@@ -1,8 +1,9 @@
 --[[
-	AddHandles: Three clickable markers hovering in front of an open selected
+	AddHandles: Clickable markers hovering in front of an open selected
 	endpoint: add a left turn, straight, or right turn segment extending the
-	road. Clicking adds a default-size segment; click-dragging places the new
-	segment's far endpoint following the cursor on the XZ plane.
+	road, or (off road ends) a Y split or an intersection. Clicking adds a
+	default-size segment; click-dragging places the new segment's far
+	endpoint following the cursor on the XZ plane (or moves a new junction).
 ]]
 
 local Packages = script.Parent.Parent.Parent.Packages
@@ -21,14 +22,61 @@ local DRAG_START_THRESHOLD = 3
 local STRAIGHT_COLOR = Color3.fromRGB(240, 240, 240)
 local TURN_COLOR = Color3.fromRGB(255, 200, 60)
 local INTERSECTION_COLOR = Color3.fromRGB(120, 190, 255)
+local SPLIT_COLOR = Color3.fromRGB(130, 225, 150)
 
--- Aside is the four-handle layout; AsideCompact is the centred three-handle
--- layout used when the intersection extension isn't offered
-local AddHandleDefinitions: { [string]: { Turn: RoadMath.TurnDirection, Ahead: number, Aside: number, AsideCompact: number, Color: Color3 } } = {
-	AddLeft = { Turn = "Left", Ahead = AHEAD * 0.75, Aside = -ASIDE * 1.4, AsideCompact = -ASIDE, Color = TURN_COLOR },
-	AddStraight = { Turn = "Straight", Ahead = AHEAD, Aside = -ASIDE * 0.45, AsideCompact = 0, Color = STRAIGHT_COLOR },
-	AddIntersection = { Turn = "Intersection", Ahead = AHEAD, Aside = ASIDE * 0.45, AsideCompact = 0, Color = INTERSECTION_COLOR },
-	AddRight = { Turn = "Right", Ahead = AHEAD * 0.75, Aside = ASIDE * 1.4, AsideCompact = ASIDE, Color = TURN_COLOR },
+-- Sideways placement in each layout: AsideFull with all five handles,
+-- Aside without the Y split (a one-lane road can't split), AsideCompact the
+-- centred three-handle layout on junction exits (no junction extensions)
+local AddHandleDefinitions: {
+	[string]: {
+		Turn: RoadMath.TurnDirection,
+		Ahead: number,
+		AsideFull: number,
+		Aside: number,
+		AsideCompact: number,
+		Color: Color3,
+	},
+} = {
+	AddLeft = {
+		Turn = "Left",
+		Ahead = AHEAD * 0.75,
+		AsideFull = -ASIDE * 1.8,
+		Aside = -ASIDE * 1.4,
+		AsideCompact = -ASIDE,
+		Color = TURN_COLOR,
+	},
+	AddStraight = {
+		Turn = "Straight",
+		Ahead = AHEAD,
+		AsideFull = -ASIDE * 0.9,
+		Aside = -ASIDE * 0.45,
+		AsideCompact = 0,
+		Color = STRAIGHT_COLOR,
+	},
+	AddSplit = {
+		Turn = "Split",
+		Ahead = AHEAD * 1.1,
+		AsideFull = 0,
+		Aside = 0,
+		AsideCompact = 0,
+		Color = SPLIT_COLOR,
+	},
+	AddIntersection = {
+		Turn = "Intersection",
+		Ahead = AHEAD,
+		AsideFull = ASIDE * 0.9,
+		Aside = ASIDE * 0.45,
+		AsideCompact = 0,
+		Color = INTERSECTION_COLOR,
+	},
+	AddRight = {
+		Turn = "Right",
+		Ahead = AHEAD * 0.75,
+		AsideFull = ASIDE * 1.8,
+		Aside = ASIDE * 1.4,
+		AsideCompact = ASIDE,
+		Color = TURN_COLOR,
+	},
 }
 
 local AddHandles = {}
@@ -74,17 +122,24 @@ function AddHandles:update(draggerToolModel, selectionInfo)
 	local right = -aside
 	local scale = self._draggerContext:getHandleScale(frame.Position)
 	local handles = {}
-	-- Two intersections directly against each other makes no sense, so
-	-- intersection exits don't offer the intersection extension and the
-	-- remaining three handles use the centred compact layout
-	local compact = endpoint.Segment.Kind == "Intersection"
+	-- Two junctions directly against each other makes no sense, so junction
+	-- exits don't offer the junction extensions and the remaining three
+	-- handles use the centred compact layout. A Y split needs two lanes to
+	-- divide between its branches.
+	local compact = RoadMath.isJunction(endpoint.Segment.Kind)
+	local lanesOut, lanesIn = RoadMath.getLaneCounts(endpoint)
+	local offerSplit = not compact and lanesOut + lanesIn >= 2
 	for handleId, def in AddHandleDefinitions do
-		if def.Turn == "Intersection" and compact then
+		if compact and (def.Turn == "Intersection" or def.Turn == "Split") then
 			continue
 		end
+		if def.Turn == "Split" and not offerSplit then
+			continue
+		end
+		local sideways = if compact then def.AsideCompact elseif offerSplit then def.AsideFull else def.Aside
 		local position = frame.Position
 			+ outward * (def.Ahead * scale)
-			+ right * ((if compact then def.AsideCompact else def.Aside) * scale)
+			+ right * (sideways * scale)
 		handles[handleId] = {
 			Turn = def.Turn,
 			Position = position,
@@ -125,6 +180,34 @@ function AddHandles:render(hoveredHandleId)
 	for handleId, handle in self._handles do
 		local hovered = handleId == hoveredHandleId or handleId == self._draggingHandleId
 		local size = MARKER_SIZE * handle.Scale * (if hovered then 1.25 else 1)
+		if handle.Turn == "Split" then
+			-- A flat "Y": a stem bar and two arms angling out ahead
+			local thickness = size * 0.3
+			local barWidth = size * 0.45
+			local stemLength = size * 0.8
+			local armLength = size * 0.9
+			local base = CFrame.lookAlong(handle.Position, handle.Outward)
+			local bars = {
+				-- The stem: behind the fork point
+				base * CFrame.new(0, 0, stemLength / 2),
+				-- The arms: ahead of it, 30 degrees either side
+				base * CFrame.Angles(0, math.rad(30), 0) * CFrame.new(0, 0, -armLength / 2),
+				base * CFrame.Angles(0, math.rad(-30), 0) * CFrame.new(0, 0, -armLength / 2),
+			}
+			for i, barCFrame in bars do
+				children[handleId .. i] = Roact.createElement("BoxHandleAdornment", {
+					Adornee = workspace.Terrain,
+					CFrame = barCFrame,
+					Size = Vector3.new(barWidth, thickness, if i == 1 then stemLength else armLength),
+					Color3 = handle.Color,
+					Transparency = if hovered then 0 else 0.25,
+					AlwaysOnTop = false,
+					Shading = Enum.AdornShading.XRay,
+					ZIndex = 0,
+				})
+			end
+			continue
+		end
 		if handle.Turn == "Intersection" then
 			-- A fat + sign: two crossed wide bars, nearly square overall with
 			-- small cutouts at the corners, reading as a crossing

@@ -77,6 +77,10 @@ export type SelectionState = {
 	LanesDiffer: boolean,
 	LaneCountsEditable: boolean,
 	LaneChangeSide: "Offside" | "Nearside",
+	SplitBranchLanes: number?,
+	SplitTotalLanes: number?,
+	SplitSeparation: number,
+	SplitLength: number,
 	LaneWidth: number,
 	SidewalkWidth: number,
 	IntersectionAngle: number,
@@ -149,6 +153,7 @@ local GENERATOR_MODULE_NAMES: { [RoadMath.SegmentKind]: string } = {
 	Straight = "StraightRoadGenerator",
 	Curve = "CurveRoadGenerator",
 	Intersection = "RoadIntersectionGenerator",
+	Split = "RoadSplitGenerator",
 }
 
 -- Build a brand new segment from the generator templates packaged inside the
@@ -165,6 +170,7 @@ local function createFallbackSegmentModel(kind: RoadMath.SegmentKind): Model?
 	model.Name = if kind == "Straight"
 		then "StraightRoad"
 		elseif kind == "Curve" then "CurveRoad"
+		elseif kind == "Split" then "RoadSplit"
 		else "RoadIntersection"
 	local generator = Templates:FindFirstChild(GENERATOR_MODULE_NAMES[kind])
 	if generator then
@@ -205,6 +211,9 @@ local GEOMETRY_ATTRIBUTES = {
 	LaneWidthZ = true,
 	IntersectionAngle = true,
 	ThroughRoad = true,
+	-- Y split layout
+	SplitLanesLeft = true,
+	SplitSeparation = true,
 }
 
 -- Give a new road segment the same lanes at both ends (a clone of a
@@ -636,7 +645,7 @@ local function createRoadSession(plugin: Plugin)
 	-- flat intersections).
 	local function alignEndFaceToMate(ref: EndpointRef, mate: RoadMath.Endpoint)
 		local info = RoadMath.getSegmentInfo(ref.Model)
-		if not info or info.Kind == "Intersection" then
+		if not info or RoadMath.isJunction(info.Kind) then
 			return
 		end
 		local endpoint = RoadMath.getEndpoint(info, ref.Id)
@@ -652,7 +661,7 @@ local function createRoadSession(plugin: Plugin)
 		local angle = math.deg(math.atan2(n:Cross(d):Dot(up), n:Dot(d)))
 		angle = math.round(angle * 100) / 100
 		setAdjustAttribute(ref.Model, ref.Id, "Dir", angle / RoadMath.flipFactor(info, "Dir"))
-		if mate.Segment.Kind == "Intersection" then
+		if RoadMath.isJunction(mate.Segment.Kind) then
 			setAdjustAttribute(ref.Model, ref.Id, "Grade", 0)
 			setAdjustAttribute(ref.Model, ref.Id, "Bank", 0)
 		else
@@ -694,7 +703,7 @@ local function createRoadSession(plugin: Plugin)
 		local connected: { IntersectionConnection } = {}
 		for _, endpoint in RoadMath.allEndpoints(segment) do
 			local partner = partnerOfEndpoint(endpoint)
-			if partner and partner.Segment.Kind ~= "Intersection" then
+			if partner and not RoadMath.isJunction(partner.Segment.Kind) then
 				table.insert(connected, {
 					Ref = { Model = partner.Segment.Model, Id = partner.Id },
 					EndId = endpoint.Id,
@@ -726,11 +735,11 @@ local function createRoadSession(plugin: Plugin)
 			return
 		end
 		table.insert(moveTargets, { Model = selected.Segment.Model, Id = selected.Id })
-		if selected.Segment.Kind ~= "Intersection" then
+		if not RoadMath.isJunction(selected.Segment.Kind) then
 			moveOriginalAdjust = captureAdjust(moveTargets[1])
 		end
 		local partner = getPartnerEndpoint()
-		if partner and partner.Segment.Kind == "Intersection" then
+		if partner and RoadMath.isJunction(partner.Segment.Kind) then
 			-- Only carry the intersection along when the road end actually
 			-- mates the exit flush (matching angle, no grade/bank). A
 			-- mismatched end instead moves freely, so it can be free-dragged
@@ -748,7 +757,7 @@ local function createRoadSession(plugin: Plugin)
 					if endpoint.Id ~= partner.Id then
 						local mate = partnerOfEndpoint(endpoint)
 						if mate
-							and mate.Segment.Kind ~= "Intersection"
+							and not RoadMath.isJunction(mate.Segment.Kind)
 							and mate.Segment.Model ~= selected.Segment.Model
 						then
 							table.insert(connected, {
@@ -857,7 +866,7 @@ local function createRoadSession(plugin: Plugin)
 		table.insert(rotateTargets, captureRotateTarget(selected, selected))
 		local partner = getPartnerEndpoint()
 		-- Intersections have no adjust angles to keep in sync
-		if partner and partner.Segment.Kind ~= "Intersection" then
+		if partner and not RoadMath.isJunction(partner.Segment.Kind) then
 			table.insert(rotateTargets, captureRotateTarget(selected, partner))
 		end
 		gestureActive = true
@@ -1058,17 +1067,63 @@ local function createRoadSession(plugin: Plugin)
 		return newModel
 	end
 
+	-- A Y split's box: its layout's width (the geometry depends on attributes
+	-- alone; the box just encloses it) and the given length
+	local function splitSize(model: Model, length: number): Vector3
+		return Vector3.new(RoadMath.splitLayout(model).BoxWidth, 0, length)
+	end
+
+	-- Create a new Y split joined to an open road end at its stem, which mates
+	-- the end's actual face, carrying on the road's lanes and appearance. The
+	-- lanes divide the default way (a two-way road separates into its two
+	-- directions, a one-way road splits about in half).
+	local function createJoinedSplit(openEnd: RoadMath.Endpoint): Model?
+		local sourceModel = openEnd.Segment.Model
+		local template = findTemplate("Split", openEnd.WorldCFrame.Position)
+		local newModel: Model?
+		if template then
+			newModel = template.Model:Clone()
+			-- Keep the cloned geometry (see createJoinedIntersection)
+		else
+			newModel = createFallbackSegmentModel("Split")
+		end
+		if not newModel then
+			warn("RoadHelper: No RoadSplit available to use as a template.")
+			return nil
+		end
+		for name, value in sourceModel:GetAttributes() do
+			if not GEOMETRY_ATTRIBUTES[name] then
+				newModel:SetAttribute(name, value)
+			end
+		end
+		matchLanesAcrossJoint(openEnd, newModel, "Split", "Stem")
+		newModel:SetAttribute("SplitLanesLeft", nil)
+		newModel:SetAttribute("SplitSeparation", RoadDefaults.SplitSeparation)
+
+		local size = splitSize(newModel, RoadDefaults.SplitLength);
+		(newModel :: any).Size = size
+		-- The stem (local -Z face) opposes the road end's actual face
+		local outward = RoadMath.actualOutwardDirection(openEnd)
+		local rotation = CFrame.lookAlong(Vector3.zero, -outward).Rotation
+		local stemLocal = Vector3.new(RoadMath.splitLayout(newModel).StemX, -size.Y / 2, -size.Z / 2)
+		newModel:PivotTo(rotation + (openEnd.WorldCFrame.Position - rotation:VectorToWorldSpace(stemLocal)))
+		newModel.Parent = sourceModel.Parent
+		return newModel
+	end
+
 	-- Add-drag state (from AddHandles)
 	local addDragRef: EndpointRef? = nil
 	local addSourceRef: EndpointRef? = nil
 	local addDragOriginalAdjust: { [RoadMath.AdjustAxis]: number }? = nil
 	local addBeforeSelection: SelectionSnapshot = nil
-	-- Intersection adds can't resize on drag; the whole intersection (and the
-	-- source road's end with it) moves instead
+	-- Junction (intersection / Y split) adds can't resize on drag; the whole
+	-- junction (and the source road's end with it, joined at JoinId) moves
+	-- instead
 	local intersectionAdd: {
 		Model: Model,
 		StartPivot: CFrame,
 		SourceRef: EndpointRef,
+		JoinId: RoadMath.EndpointId,
 	}? = nil
 
 	local function startAdd(turn: RoadMath.TurnDirection): number?
@@ -1078,9 +1133,10 @@ local function createRoadSession(plugin: Plugin)
 		end
 		gestureActive = true
 		addBeforeSelection = snapshotSelection()
-		if turn == "Intersection" then
-			beginRecording("Add Intersection")
-			local newModel = createJoinedIntersection(selected)
+		if turn == "Intersection" or turn == "Split" then
+			local isSplit = turn == "Split"
+			beginRecording(if isSplit then "Add Split" else "Add Intersection")
+			local newModel = if isSplit then createJoinedSplit(selected) else createJoinedIntersection(selected)
 			if not newModel then
 				finishRecording()
 				gestureActive = false
@@ -1090,9 +1146,10 @@ local function createRoadSession(plugin: Plugin)
 				Model = newModel,
 				StartPivot = newModel:GetPivot(),
 				SourceRef = { Model = selected.Segment.Model, Id = selected.Id },
+				JoinId = if isSplit then "Stem" else "ZMinus",
 			}
-			-- Select the opposite exit, ready to keep extending
-			selectedRef = { Model = newModel, Id = "ZPlus" }
+			-- Select an exit across from the join, ready to keep extending
+			selectedRef = { Model = newModel, Id = if isSplit then "BranchLeft" else "ZPlus" }
 			changeSignal:Fire()
 			return selected.WorldCFrame.Position.Y
 		end
@@ -1122,7 +1179,7 @@ local function createRoadSession(plugin: Plugin)
 			local ixInfo = RoadMath.getSegmentInfo(ix.Model)
 			local roadInfo = RoadMath.getSegmentInfo(ix.SourceRef.Model)
 			if ixInfo and roadInfo then
-				local exit = RoadMath.getEndpoint(ixInfo, "ZMinus")
+				local exit = RoadMath.getEndpoint(ixInfo, ix.JoinId)
 				local ok, err = pcall(function()
 					applySolutionToRef(ix.SourceRef, RoadMath.solveMove(roadInfo, ix.SourceRef.Id, exit.WorldCFrame.Position))
 				end)
@@ -1200,7 +1257,7 @@ local function createRoadSession(plugin: Plugin)
 
 	local function startIntersectionTransform()
 		local selected = getSelectedEndpoint()
-		if not selected or selected.Segment.Kind ~= "Intersection" then
+		if not selected or not RoadMath.isJunction(selected.Segment.Kind) then
 			return
 		end
 		local connected = collectIntersectionConnections(selected.Segment)
@@ -1500,7 +1557,7 @@ local function createRoadSession(plugin: Plugin)
 			GetEndpointCFrame = function()
 				local endpoint = getSelectedEndpoint()
 				-- Intersection ends can only be extended, not moved/rotated
-				if not endpoint or endpoint.Segment.Kind == "Intersection" then
+				if not endpoint or RoadMath.isJunction(endpoint.Segment.Kind) then
 					return nil
 				end
 				-- Handles align with the end's actual face, not the box
@@ -1514,7 +1571,7 @@ local function createRoadSession(plugin: Plugin)
 					local partner = getPartnerEndpoint()
 					if partner then
 						table.insert(exclusions, partner.Segment.Model)
-						if partner.Segment.Kind == "Intersection" then
+						if RoadMath.isJunction(partner.Segment.Kind) then
 							-- The intersection and everything joined to it
 							-- move along with the drag
 							for _, endpoint in RoadMath.allEndpoints(partner.Segment) do
@@ -1536,7 +1593,7 @@ local function createRoadSession(plugin: Plugin)
 			GetEndpointCFrame = function()
 				local endpoint = getSelectedEndpoint()
 				-- Intersection ends can only be extended, not moved/rotated
-				if not endpoint or endpoint.Segment.Kind == "Intersection" then
+				if not endpoint or RoadMath.isJunction(endpoint.Segment.Kind) then
 					return nil
 				end
 				-- Handles align with the end's actual face, not the box
@@ -1551,7 +1608,7 @@ local function createRoadSession(plugin: Plugin)
 		EndpointMoveHandles.new(draggerContext, {
 			GetEndpointCFrame = function()
 				local endpoint = getSelectedEndpoint()
-				if endpoint and endpoint.Segment.Kind == "Intersection" then
+				if endpoint and RoadMath.isJunction(endpoint.Segment.Kind) then
 					return endpoint.Segment.Model:GetPivot()
 				end
 				return nil
@@ -1559,7 +1616,7 @@ local function createRoadSession(plugin: Plugin)
 			GetDragExclusions = function(): { Instance }
 				local exclusions: { Instance } = {}
 				local selected = getSelectedEndpoint()
-				if selected and selected.Segment.Kind == "Intersection" then
+				if selected and RoadMath.isJunction(selected.Segment.Kind) then
 					table.insert(exclusions, selected.Segment.Model)
 					local state = intersectionDrag
 					if state then
@@ -1590,7 +1647,7 @@ local function createRoadSession(plugin: Plugin)
 			Axes = { "Dir" },
 			GetEndpointCFrame = function()
 				local endpoint = getSelectedEndpoint()
-				if endpoint and endpoint.Segment.Kind == "Intersection" then
+				if endpoint and RoadMath.isJunction(endpoint.Segment.Kind) then
 					return endpoint.Segment.Model:GetPivot()
 				end
 				return nil
@@ -1784,6 +1841,7 @@ local function createRoadSession(plugin: Plugin)
 		local partner = getPartnerEndpoint()
 		local laneAxisSuffix = RoadMath.laneSuffix(selected.Segment.Kind, selected.Id)
 		local lanesOut, lanesIn = RoadMath.getLaneCounts(selected)
+		local splitLayout = selected.Segment.Split
 		local canChangeLanes = RoadMath.supportsLaneChange(selected.Segment.Kind)
 		local sameLanes = not RoadMath.hasLaneChange(selected.Segment)
 		local lanesDiffer = false
@@ -1817,6 +1875,16 @@ local function createRoadSession(plugin: Plugin)
 			LaneChangeSide = if selected.Segment.Model:GetAttribute("LaneChangeSide") == "Nearside"
 				then "Nearside"
 				else "Offside",
+			-- Y splits: the selected branch's lanes (nil at the stem), the
+			-- stem's total, the gap between the branches and the length
+			SplitBranchLanes = if splitLayout and selected.Id == "BranchLeft"
+				then splitLayout.LeftLanes
+				elseif splitLayout and selected.Id == "BranchRight" then splitLayout.RightLanes
+				else nil,
+			SplitTotalLanes = if splitLayout then splitLayout.LeftLanes + splitLayout.RightLanes else nil,
+			SplitSeparation = (selected.Segment.Model:GetAttribute("SplitSeparation") :: number?)
+				or RoadDefaults.SplitSeparation,
+			SplitLength = selected.Segment.Size.Z,
 			LaneWidth = (selected.Segment.Model:GetAttribute("LaneWidth" .. laneAxisSuffix) :: number?) or RoadDefaults.LaneWidth,
 			SidewalkWidth = (selected.Segment.Model:GetAttribute("SidewalkWidth") :: number?) or RoadDefaults.SidewalkWidth,
 			IntersectionAngle = (selected.Segment.Model:GetAttribute("IntersectionAngle") :: number?) or RoadDefaults.IntersectionAngle,
@@ -1851,7 +1919,7 @@ local function createRoadSession(plugin: Plugin)
 		if not selected then
 			return
 		end
-		local connections = if selected.Segment.Kind == "Intersection"
+		local connections = if RoadMath.isJunction(selected.Segment.Kind)
 			then collectIntersectionConnections(selected.Segment)
 			else nil
 		beginRecording("Edit Road")
@@ -1890,6 +1958,39 @@ local function createRoadSession(plugin: Plugin)
 			return
 		end
 		local model = selected.Segment.Model
+		if selected.Segment.Kind == "Split" then
+			-- A split's layout derives from its attributes and length. Its stem
+			-- stays put (it joins the road being split), and the roads joined
+			-- to its branches follow them.
+			local layout = assert(selected.Segment.Split)
+			local connections = collectIntersectionConnections(selected.Segment)
+			local stemBefore = RoadMath.getEndpoint(selected.Segment, "Stem").WorldCFrame.Position
+			local length = selected.Segment.Size.Z
+			beginRecording("Resize Split")
+			if name == "BranchLanes" then
+				-- The selected branch's share of the stem's lanes
+				local total = layout.LeftLanes + layout.RightLanes
+				local leftLanes = if selected.Id == "BranchRight" then total - value else value
+				model:SetAttribute("SplitLanesLeft", math.clamp(leftLanes, 1, math.max(total - 1, 1)))
+			elseif name == "SplitSeparation" then
+				model:SetAttribute("SplitSeparation", math.max(value, 0))
+			elseif name == "SplitLength" then
+				length = math.max(value, RoadMath.MIN_LENGTH)
+			else
+				model:SetAttribute(sizingAttributeName(selected, name), value)
+			end
+			(model :: any).Size = splitSize(model, length)
+			local resized = RoadMath.getSegmentInfo(model)
+			if resized then
+				local stemNow = RoadMath.getEndpoint(resized, "Stem").WorldCFrame.Position
+				model:PivotTo(model:GetPivot() + (stemBefore - stemNow))
+			end
+			reseatConnectedEnds(model, connections)
+			finishRecording()
+			updateDragger()
+			changeSignal:Fire()
+			return
+		end
 		if selected.Segment.Kind == "Intersection" then
 			-- Adjust the selected end's road on the intersection. The box
 			-- grows/shrinks with the width so the corner turn space is kept,
@@ -2050,7 +2151,7 @@ local function createRoadSession(plugin: Plugin)
 	function session.SetAdjustValue(axis: RoadMath.AdjustAxis, value: number)
 		local selected = getSelectedEndpoint()
 		-- Intersections have no adjust angles
-		if not selected or selected.Segment.Kind == "Intersection" then
+		if not selected or RoadMath.isJunction(selected.Segment.Kind) then
 			return
 		end
 		local delta = value - RoadMath.getAdjustValue(selected, axis)
@@ -2064,7 +2165,7 @@ local function createRoadSession(plugin: Plugin)
 		local partner = getPartnerEndpoint()
 		-- As with the rotate rings: an intersection partner has no adjust
 		-- angles to keep in sync (the road end just stops being flush)
-		if partner and partner.Segment.Kind ~= "Intersection" then
+		if partner and not RoadMath.isJunction(partner.Segment.Kind) then
 			applyTo(partner)
 		end
 		finishRecording()

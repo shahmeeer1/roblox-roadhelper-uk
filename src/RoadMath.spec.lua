@@ -761,4 +761,109 @@ return function(t: TestTypes.TestContext)
 		(seg.Model :: any).attrs.DriveSide = "Right"
 		expectFuzzy(t, RoadMath.laneChangeShift(red, true, -24), Vector3.new(12, 0, 0))
 	end)
+
+	--
+	-- Y splits
+	--
+
+	local function makeSplit(attrs: { [string]: any }, length: number?): RoadMath.SegmentInfo
+		local fake: any = { attrs = attrs }
+		fake.GetAttribute = function(self, name)
+			return self.attrs[name]
+		end
+		local layout = RoadMath.splitLayout(fake)
+		return {
+			Model = fake,
+			Kind = "Split",
+			Width = layout.StemWidth,
+			Size = Vector3.new(layout.BoxWidth, 0, length or 240),
+			Pivot = CFrame.identity,
+			Flip = false,
+			Split = layout,
+		}
+	end
+
+	t.test("split: a two-way road separates into its two directions", function()
+		local split = makeSplit({
+			LaneWidth = 24,
+			SidewalkWidth = 8,
+			LaneCountForward = 2,
+			LaneCountBackward = 2,
+			SplitSeparation = 16,
+		})
+		local layout = assert(split.Split)
+		-- Driving on the left, the left branch takes the forward lanes
+		t.expect(layout.LeftForward).toBe(2)
+		t.expect(layout.LeftBackward).toBe(0)
+		t.expect(layout.RightForward).toBe(0)
+		t.expect(layout.RightBackward).toBe(2)
+		-- The split line is the centre line, at x = 0
+		t.expect(layout.StemX).toBe(0)
+		t.expect(layout.LeftX).toBe(40)
+		t.expect(layout.RightX).toBe(-40)
+		t.expect(layout.BoxWidth).toBe(144)
+
+		local stem = RoadMath.getEndpoint(split, "Stem")
+		expectFuzzy(t, stem.WorldCFrame.Position, Vector3.new(0, 0, -120))
+		expectFuzzy(t, stem.WorldCFrame.LookVector, Vector3.new(0, 0, -1))
+		local left = RoadMath.getEndpoint(split, "BranchLeft")
+		expectFuzzy(t, left.WorldCFrame.Position, Vector3.new(40, 0, 120))
+		expectFuzzy(t, left.WorldCFrame.LookVector, Vector3.new(0, 0, 1))
+		t.expect(RoadMath.endpointWidth(left)).toBe(64)
+
+		-- Lanes out/in at each end
+		local lanesOut, lanesIn = RoadMath.getLaneCounts(left)
+		t.expect(lanesOut).toBe(2)
+		t.expect(lanesIn).toBe(0)
+		lanesOut, lanesIn = RoadMath.getLaneCounts(RoadMath.getEndpoint(split, "BranchRight"))
+		t.expect(lanesOut).toBe(0)
+		t.expect(lanesIn).toBe(2)
+		lanesOut, lanesIn = RoadMath.getLaneCounts(stem)
+		t.expect(lanesOut).toBe(2)
+		t.expect(lanesIn).toBe(2)
+
+		-- The gap between the branch roads' outer footway edges is the
+		-- separation
+		t.expect((layout.LeftX - 32) - (layout.RightX + 32)).toBe(16)
+	end)
+
+	t.test("split: a one-way road diverges, the smaller part to the left", function()
+		local split = makeSplit({
+			LaneWidth = 24,
+			SidewalkWidth = 8,
+			LaneCountForward = 3,
+			LaneCountBackward = 0,
+			SplitSeparation = 16,
+		})
+		local layout = assert(split.Split)
+		t.expect(layout.LeftLanes).toBe(1)
+		t.expect(layout.RightLanes).toBe(2)
+		t.expect(layout.LeftForward).toBe(1)
+		t.expect(layout.RightForward).toBe(2)
+		-- The split line (x = 0) is one lane in from the stem's left edge
+		t.expect(layout.StemX + 36 - 24).toBe(0)
+		-- Stem roadway edges and branch positions
+		t.expect(layout.LeftX).toBe(40)
+		t.expect(layout.RightX).toBe(-28)
+	end)
+
+	t.test("split: branch lanes clamp, and follow the driving side", function()
+		local split = makeSplit({
+			LaneCountForward = 2,
+			LaneCountBackward = 2,
+			SplitLanesLeft = 9,
+		})
+		t.expect((split.Split :: any).LeftLanes).toBe(3)
+		t.expect((split.Split :: any).RightLanes).toBe(1)
+
+		local rightHand = makeSplit({
+			LaneCountForward = 2,
+			LaneCountBackward = 1,
+			DriveSide = "Right",
+		})
+		-- Driving on the right, the left side carries the backward lanes
+		t.expect((rightHand.Split :: any).LeftBackward).toBe(1)
+		t.expect((rightHand.Split :: any).LeftForward).toBe(0)
+		t.expect((rightHand.Split :: any).RightForward).toBe(2)
+	end)
 end

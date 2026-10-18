@@ -48,6 +48,15 @@ local function describeStatus(state: createRoadSession.SelectionState): string
 		else
 			return "<b>Connected intersection exit selected.</b>"
 		end
+	elseif (state :: any).SegmentKind == "Split" then
+		local which = if (state :: any).EndpointId == "Stem" then "stem" else "branch"
+		if state.Kind == "open" then
+			return `<b>Y split {which} selected.</b>`
+				.. "\nDrag a cone to extend it; the central handles move the whole split."
+		else
+			return `<b>Connected Y split {which} selected.</b>`
+				.. "\nThe central handles move the whole split; roads joined to it follow."
+		end
 	elseif state.Kind == "open" then
 		return "<b>Open endpoint selected.</b>"
 			.. "\nDrag the handles to move it, the rings to adjust its angles, or drag one of the cones to extend the road with a new segment."
@@ -118,6 +127,26 @@ local function ParametersPanel(props: {
 					HelpRichText = "Adds a sloped fill skirt along the intersection's edges that ramps down into the surrounding terrain.",
 				}),
 				LayoutOrder = 2,
+				Subject = e(Checkbox, {
+					Label = "Have skirt",
+					Checked = state.Blend,
+					Changed = props.SetBlend,
+				}),
+			}),
+		})
+	end
+	if (state :: any).SegmentKind == "Split" then
+		-- A split is flat with fixed exits: no angles to edit
+		return e(SubPanel, {
+			Title = "Parameters (Attributes)",
+			Padding = UDim.new(0, 6),
+			LayoutOrder = props.LayoutOrder,
+		}, {
+			HaveSkirt = e(HelpGui.WithHelpIcon, {
+				Help = e(HelpGui.BasicTooltip, {
+					HelpRichText = "Adds a sloped fill skirt along the split's outer edges that ramps down into the surrounding terrain.",
+				}),
+				LayoutOrder = 1,
 				Subject = e(Checkbox, {
 					Label = "Have skirt",
 					Checked = state.Blend,
@@ -203,7 +232,8 @@ local function DetailPanel(props: {
 	LayoutOrder: number?,
 })
 	local state = props.SelectionState
-	if state.Kind == "none" then
+	-- Y splits don't tessellate by angle (they have no turns or slopes)
+	if state.Kind == "none" or (state :: any).SegmentKind == "Split" then
 		return nil :: any
 	end
 	local chips: { [string]: any } = {
@@ -315,6 +345,13 @@ local function SizingPanel(props: {
 		return nil :: any
 	end
 	local lanesEditable = (state :: any).LaneCountsEditable
+	local isSplit = (state :: any).SegmentKind == "Split"
+	-- A split's branches take a share of the stem's lanes rather than
+	-- having lanes out/in of their own
+	local isSplitBranch = isSplit and (state :: any).EndpointId ~= "Stem"
+	local showLaneCounts = lanesEditable and not isSplitBranch
+	-- A split's stem needs two lanes to divide between its branches
+	local minLanes = if isSplit then 2 else 1
 	local laneChangeSideChips: { [string]: any } = {
 		ListLayout = e("UIListLayout", {
 			FillDirection = Enum.FillDirection.Horizontal,
@@ -354,7 +391,7 @@ local function SizingPanel(props: {
 				LayoutOrder = 1,
 			})
 			else nil,
-		LanesOutInput = if lanesEditable then e(HelpGui.WithHelpIcon, {
+		LanesOutInput = if showLaneCounts then e(HelpGui.WithHelpIcon, {
 			Help = e(HelpGui.BasicTooltip, {
 				HelpRichText = "Lanes carrying traffic <b>out</b> through the selected end. Zero makes a one-way road. The centre line sits between the two directions, and the bounds adjust so both endpoints stay in place.",
 			}),
@@ -364,8 +401,8 @@ local function SizingPanel(props: {
 				Value = state.LanesOut,
 				ValueEntered = function(value: number): number?
 					local count = math.max(math.round(value), 0)
-					if count + state.LanesIn < 1 then
-						-- A road needs at least one lane: revert
+					if count + state.LanesIn < minLanes then
+						-- Too few lanes in all: revert
 						return state.LanesOut
 					end
 					props.SetSizing("LanesOut", count)
@@ -373,7 +410,7 @@ local function SizingPanel(props: {
 				end,
 			}),
 		}) else nil,
-		LanesInInput = if lanesEditable then e(HelpGui.WithHelpIcon, {
+		LanesInInput = if showLaneCounts then e(HelpGui.WithHelpIcon, {
 			Help = e(HelpGui.BasicTooltip, {
 				HelpRichText = "Lanes carrying traffic <b>in</b> through the selected end. Zero makes a one-way road. The centre line sits between the two directions, and the bounds adjust so both endpoints stay in place.",
 			}),
@@ -383,8 +420,8 @@ local function SizingPanel(props: {
 				Value = state.LanesIn,
 				ValueEntered = function(value: number): number?
 					local count = math.max(math.round(value), 0)
-					if count + state.LanesOut < 1 then
-						-- A road needs at least one lane: revert
+					if count + state.LanesOut < minLanes then
+						-- Too few lanes in all: revert
 						return state.LanesIn
 					end
 					props.SetSizing("LanesIn", count)
@@ -418,6 +455,60 @@ local function SizingPanel(props: {
 					BackgroundColor3 = Colors.ACTION_BLUE,
 					AutomaticSize = Enum.AutomaticSize.Y,
 				}, laneChangeSideChips),
+			})
+			else nil,
+		BranchLanesInput = if isSplitBranch
+			then e(HelpGui.WithHelpIcon, {
+				Help = e(HelpGui.BasicTooltip, {
+					HelpRichText = "How many of the stem's lanes this branch takes, counted from its outer edge; the other branch takes the rest. Each lane keeps its direction, so taking exactly one direction's lanes separates a two-way road into a dual carriageway.",
+				}),
+				LayoutOrder = 1,
+				Subject = e(NumberInput, {
+					Label = "Branch Lanes",
+					Value = (state :: any).SplitBranchLanes,
+					ValueEntered = function(value: number): number?
+						local total = (state :: any).SplitTotalLanes
+						local count = math.clamp(math.round(value), 1, math.max(total - 1, 1))
+						props.SetSizing("BranchLanes", count)
+						return count
+					end,
+				}),
+			})
+			else nil,
+		SplitSeparationInput = if isSplit
+			then e(HelpGui.WithHelpIcon, {
+				Help = e(HelpGui.BasicTooltip, {
+					HelpRichText = "The gap between the two branch roads (outside their footways) at the far end, in studs. The gore between them is hatched up to the nose, then a raised island. Roads joined to the branches follow.",
+				}),
+				LayoutOrder = 9,
+				Subject = e(NumberInput, {
+					Label = "Separation",
+					Value = (state :: any).SplitSeparation,
+					ValueEntered = function(value: number): number?
+						local separation = math.max(value, 0)
+						props.SetSizing("SplitSeparation", separation)
+						return separation
+					end,
+				}),
+			})
+			else nil,
+		SplitLengthInput = if isSplit
+			then e(HelpGui.WithHelpIcon, {
+				Help = e(HelpGui.BasicTooltip, {
+					HelpRichText = "How far the branches take to part, in studs. UK diverges on faster roads are long and gentle; the stem stays put and the branches move.",
+				}),
+				LayoutOrder = 10,
+				Subject = e(NumberInput, {
+					Label = "Length",
+					Value = (state :: any).SplitLength,
+					ValueEntered = function(value: number): number?
+						if value <= 0 then
+							return (state :: any).SplitLength
+						end
+						props.SetSizing("SplitLength", value)
+						return value
+					end,
+				}),
 			})
 			else nil,
 		LaneWidthInput = e(HelpGui.WithHelpIcon, {

@@ -30,9 +30,37 @@ local RoadDefaults = require("./RoadDefaults")
 
 local RoadMath = {}
 
-export type SegmentKind = "Straight" | "Curve" | "Intersection"
--- Roads have a Blue and a Red end; intersections have one id per stub
-export type EndpointId = "Blue" | "Red" | "ZPlus" | "ZMinus" | "XPlus" | "XMinus"
+export type SegmentKind = "Straight" | "Curve" | "Intersection" | "Split"
+-- Roads have a Blue and a Red end; intersections have one id per stub; Y
+-- splits have a stem and two branches
+export type EndpointId =
+	"Blue"
+	| "Red"
+	| "ZPlus"
+	| "ZMinus"
+	| "XPlus"
+	| "XMinus"
+	| "Stem"
+	| "BranchLeft"
+	| "BranchRight"
+
+-- The layout of a Y split, in its local (pivot) space: see the Y splits
+-- section
+export type SplitLayout = {
+	StemX: number,
+	LeftX: number,
+	RightX: number,
+	StemWidth: number,
+	LeftWidth: number,
+	RightWidth: number,
+	LeftLanes: number,
+	RightLanes: number,
+	LeftForward: number,
+	LeftBackward: number,
+	RightForward: number,
+	RightBackward: number,
+	BoxWidth: number,
+}
 
 export type SegmentInfo = {
 	Model: Model, -- Actually a ProceduralModel
@@ -49,6 +77,8 @@ export type SegmentInfo = {
 	WidthX: number?,
 	Angle: number?,
 	ThroughRoad: boolean?,
+	-- Y split only
+	Split: SplitLayout?,
 }
 
 export type Endpoint = {
@@ -78,7 +108,14 @@ local GENERATOR_KINDS: { [string]: SegmentKind } = {
 	StraightRoadGenerator = "Straight",
 	CurveRoadGenerator = "Curve",
 	RoadIntersectionGenerator = "Intersection",
+	RoadSplitGenerator = "Split",
 }
+
+-- Junctions (intersections and Y splits) are flat with fixed exits: their
+-- ends have no adjust angles and are only moved as a whole
+function RoadMath.isJunction(kind: SegmentKind): boolean
+	return kind == "Intersection" or kind == "Split"
+end
 
 --------------------------------------------------------------------------------
 -- Segment discovery
@@ -168,6 +205,13 @@ end
 
 -- The forward/backward lane counts at one end of a segment
 local function readEndLaneCounts(kind: SegmentKind, model: Instance, id: EndpointId): (number, number)
+	if kind == "Split" and (id == "BranchLeft" or id == "BranchRight") then
+		local layout = RoadMath.splitLayout(model)
+		if id == "BranchLeft" then
+			return layout.LeftForward, layout.LeftBackward
+		end
+		return layout.RightForward, layout.RightBackward
+	end
 	if id == "Red" and redOverridesActive(kind, model) then
 		return RoadMath.sanitizeLaneCounts(
 			model:GetAttribute(RoadMath.RED_LANE_OVERRIDES[1]) :: number,
@@ -175,6 +219,93 @@ local function readEndLaneCounts(kind: SegmentKind, model: Instance, id: Endpoin
 		)
 	end
 	return readLaneCounts(model, RoadMath.laneSuffix(kind, id))
+end
+
+--------------------------------------------------------------------------------
+-- Y splits
+--------------------------------------------------------------------------------
+
+--[[
+	A Y split is one road dividing into two. Its stem end (facing -Z) joins
+	the road; its left and right branch ends face +Z, side by side, with
+	"left" as seen looking from the stem toward the branches (+X, which is
+	+lat: left of forward travel). The stem's lanes (LaneCountForward /
+	LaneCountBackward, forward running stem -> branches) divide across the
+	road: the left branch takes SplitLanesLeft lanes from the stem's left
+	edge, the right branch the rest, every lane keeping its travel
+	direction. So a two-way road can separate into its two directions (the
+	start of a dual carriageway), or a one-way carriageway can diverge.
+
+	SplitSeparation is the gap between the two branch roads (outside their
+	footways) at the far end. The split line, where the branches part, is at
+	local x = 0. The layout depends only on attributes: Size.Z is the length,
+	and Size.X is kept at BoxWidth just so the box encloses the geometry.
+]]
+
+-- The default left-branch lanes: a two-way road separates into its two
+-- directions (driving on the left, the lanes on the left are the ones
+-- travelling stem -> branches); a one-way road splits about in half, the
+-- smaller part to the left (nearside, for UK diverges)
+function RoadMath.defaultSplitLanesLeft(forward: number, backward: number, driveLeft: boolean): number
+	if forward > 0 and backward > 0 then
+		return if driveLeft then forward else backward
+	end
+	return math.max(math.floor((forward + backward) / 2), 1)
+end
+
+function RoadMath.splitLayout(model: Instance): SplitLayout
+	local laneWidth = getNumberAttribute(model, "LaneWidth", RoadDefaults.LaneWidth)
+	local sidewalk = getNumberAttribute(model, "SidewalkWidth", RoadDefaults.SidewalkWidth)
+	local forward, backward = readLaneCounts(model, "")
+	local total = forward + backward
+	local driveLeft = model:GetAttribute("DriveSide") ~= "Right"
+
+	local leftValue = model:GetAttribute("SplitLanesLeft")
+	local left = if typeof(leftValue) == "number" and leftValue >= 0
+		then math.floor(leftValue)
+		else RoadMath.defaultSplitLanesLeft(forward, backward, driveLeft)
+	-- Each branch keeps at least one lane (a one-lane stem can't really split)
+	left = if total >= 2 then math.clamp(left, 1, total - 1) else total
+	local right = total - left
+
+	-- Across the stem from right (-x) to left (+x) come the -lat group of
+	-- lanes (backward when driving on the left), then the +lat group
+	local plusCount = if driveLeft then forward else backward
+	local leftPlus = math.min(left, plusCount)
+	local leftMinus = left - leftPlus
+	local rightPlus = plusCount - leftPlus
+	local rightMinus = right - rightPlus
+	local leftForward, leftBackward, rightForward, rightBackward
+	if driveLeft then
+		leftForward, leftBackward, rightForward, rightBackward = leftPlus, leftMinus, rightPlus, rightMinus
+	else
+		leftForward, leftBackward, rightForward, rightBackward = leftMinus, leftPlus, rightMinus, rightPlus
+	end
+
+	local separation = math.max(getNumberAttribute(model, "SplitSeparation", RoadDefaults.SplitSeparation), 0)
+	local stemRoadway = total * laneWidth
+	local stemWidth = stemRoadway + 2 * sidewalk
+	local leftWidth = left * laneWidth + 2 * sidewalk
+	local rightWidth = right * laneWidth + 2 * sidewalk
+	-- The stem's right-branch lanes lie right of the split line at x = 0
+	local stemX = stemRoadway / 2 - right * laneWidth
+	-- The two branch roads side by side at the far end, centred on x = 0
+	local span = rightWidth + separation + leftWidth
+	return {
+		StemX = stemX,
+		LeftX = span / 2 - leftWidth / 2,
+		RightX = -span / 2 + rightWidth / 2,
+		StemWidth = stemWidth,
+		LeftWidth = leftWidth,
+		RightWidth = rightWidth,
+		LeftLanes = left,
+		RightLanes = right,
+		LeftForward = leftForward,
+		LeftBackward = leftBackward,
+		RightForward = rightForward,
+		RightBackward = rightBackward,
+		BoxWidth = 2 * math.max(span / 2, math.abs(stemX) + stemWidth / 2),
+	}
 end
 
 function RoadMath.getSegmentInfo(instance: Instance): SegmentInfo?
@@ -208,6 +339,18 @@ function RoadMath.getSegmentInfo(instance: Instance): SegmentInfo?
 			Size = (model :: any).Size :: Vector3,
 			Pivot = model:GetPivot(),
 			Flip = false,
+		}
+	end
+	if kind == "Split" then
+		local layout = RoadMath.splitLayout(model)
+		return {
+			Model = model,
+			Kind = kind,
+			Width = layout.StemWidth,
+			Size = (model :: any).Size :: Vector3,
+			Pivot = model:GetPivot(),
+			Flip = false,
+			Split = layout,
 		}
 	end
 	local laneWidth = getNumberAttribute(model, "LaneWidth", RoadDefaults.LaneWidth)
@@ -306,10 +449,25 @@ local function intersectionEndpointFrame(segment: SegmentInfo, id: EndpointId): 
 	return CFrame.lookAlong(Vector3.new(p.X, -halfY, p.Z), uX * s)
 end
 
+-- A Y split's ends sit at the box bottom: the stem on the -Z face, the two
+-- branches side by side on the +Z face (see the Y splits section)
+local function splitEndpointFrame(segment: SegmentInfo, id: EndpointId): CFrame
+	local layout = assert(segment.Split)
+	local halfY = segment.Size.Y / 2
+	local halfZ = segment.Size.Z / 2
+	if id == "Stem" then
+		return CFrame.lookAlong(Vector3.new(layout.StemX, -halfY, -halfZ), -Vector3.zAxis)
+	end
+	local x = if id == "BranchLeft" then layout.LeftX else layout.RightX
+	return CFrame.lookAlong(Vector3.new(x, -halfY, halfZ), Vector3.zAxis)
+end
+
 function RoadMath.getEndpoint(segment: SegmentInfo, id: EndpointId): Endpoint
 	local localFrame
 	if segment.Kind == "Intersection" then
 		localFrame = intersectionEndpointFrame(segment, id)
+	elseif segment.Kind == "Split" then
+		localFrame = splitEndpointFrame(segment, id)
 	else
 		localFrame = RoadMath.localEndpointFrame(segment.Kind, segment.Size, RoadMath.boxWidth(segment), segment.Flip, id)
 	end
@@ -332,6 +490,8 @@ function RoadMath.endpointIds(segment: SegmentInfo): { EndpointId }
 			table.insert(ids, "XMinus")
 		end
 		return ids
+	elseif segment.Kind == "Split" then
+		return { "Stem", "BranchLeft", "BranchRight" }
 	end
 	return { "Blue", "Red" }
 end
@@ -345,9 +505,9 @@ function RoadMath.allEndpoints(segment: SegmentInfo): { Endpoint }
 end
 
 -- Whether forward traffic leaves the segment through this end: a road's red
--- end, or an intersection's Plus exits
+-- end, an intersection's Plus exits, or a Y split's branches
 function RoadMath.isForwardEnd(id: EndpointId): boolean
-	return id == "Red" or id == "ZPlus" or id == "XPlus"
+	return id == "Red" or id == "ZPlus" or id == "XPlus" or id == "BranchLeft" or id == "BranchRight"
 end
 
 -- Which road of its segment an end belongs to, as a lane attribute suffix
@@ -397,6 +557,9 @@ function RoadMath.endpointWidth(endpoint: Endpoint): number
 		return endpoint.Segment.WidthX or endpoint.Segment.Width
 	elseif endpoint.Id == "Red" then
 		return endpoint.Segment.WidthRed or endpoint.Segment.Width
+	elseif endpoint.Id == "BranchLeft" or endpoint.Id == "BranchRight" then
+		local layout = assert(endpoint.Segment.Split)
+		return if endpoint.Id == "BranchLeft" then layout.LeftWidth else layout.RightWidth
 	end
 	return endpoint.Segment.Width
 end
@@ -423,11 +586,11 @@ function RoadMath.laneChangeShift(endpoint: Endpoint, changedOut: boolean, delta
 	return changedSide * (deltaWidth / 2)
 end
 
--- The effective world yaw (radians) of an end's Dir adjust. Intersection
--- exits have no adjust angles: any stray Adjust attribute on an
--- intersection model must not rotate its exits.
+-- The effective world yaw (radians) of an end's Dir adjust. Junction
+-- (intersection and Y split) exits have no adjust angles: any stray Adjust
+-- attribute on a junction model must not rotate its exits.
 local function effectiveDirAngle(endpoint: Endpoint): number
-	if endpoint.Segment.Kind == "Intersection" then
+	if RoadMath.isJunction(endpoint.Segment.Kind) then
 		return 0
 	end
 	local dirName = if endpoint.Id == "Blue" then "AdjustBlueDir" else "AdjustRedDir"
@@ -678,10 +841,10 @@ end
 -- and the new segment is unflipped, so its attribute is the effective yaw
 -- directly.
 function RoadMath.matchingAdjust(openEnd: Endpoint, newEndId: EndpointId): { Dir: number, Grade: number, Bank: number }
-	if openEnd.Segment.Kind == "Intersection" then
+	if RoadMath.isJunction(openEnd.Segment.Kind) then
 		-- Flat exits: no grade/bank. Dir takes up the yaw between the
-		-- box-aligned placement frame and the actual exit direction (zero
-		-- for the Z exits, the skew for angled X exits).
+		-- box-aligned placement frame and the actual exit direction (the
+		-- skew for an intersection's angled X exits, zero otherwise).
 		local n = RoadMath.placementFrame(openEnd).LookVector
 		local d = openEnd.WorldCFrame.LookVector
 		local yaw = math.deg(math.atan2(n:Cross(d).Y, n:Dot(d)))
@@ -704,7 +867,7 @@ end
 -- New segment placement
 --------------------------------------------------------------------------------
 
-export type TurnDirection = "Left" | "Straight" | "Right" | "Intersection"
+export type TurnDirection = "Left" | "Straight" | "Right" | "Intersection" | "Split"
 
 -- Plan-view angle of a direction vector, matching the clockwise-positive
 -- convention: angle(v) increases when v is rotated by CFrame.Angles(0, a, 0)
