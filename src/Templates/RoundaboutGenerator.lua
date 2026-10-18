@@ -778,12 +778,15 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 						local angle = fromAngle + sweep * k / FILLET_STEPS
 						return Vector3.new(c.X + math.cos(angle) * r, bottom + h, c.Z + math.sin(angle) * r)
 					end
+					-- (A bulging fillet's sector overlaps the ring's and arm's road, so it
+					-- sits a hair lower, like the arm's overlap)
+					local roadTop = if fillet.Convex then hRoadTop - 0.02 else hRoadTop
 					local hub = if fillet.Convex
-						then Vector3.new(c.X, bottom + hRoadTop, c.Z)
-						else Vector3.new(fillet.Corner.X, bottom + hRoadTop, fillet.Corner.Z)
+						then Vector3.new(c.X, bottom + roadTop, c.Z)
+						else Vector3.new(fillet.Corner.X, bottom + roadTop, fillet.Corner.Z)
 					local footwayInner = if fillet.Convex then radius else radius - sidewalkWidth
 					for k = 0, FILLET_STEPS - 1 do
-						tri(hub, onArc(k, radius, hRoadTop), onArc(k + 1, radius, hRoadTop),
+						tri(hub, onArc(k, radius, roadTop), onArc(k + 1, radius, roadTop),
 							roadColor, roadMaterial, roadMaterialVariant, ROAD_THICKNESS)
 						if sidewalkWidth > 0 then
 							quad(onArc(k, footwayInner, hSideTop), onArc(k, footwayInner + sidewalkWidth, hSideTop),
