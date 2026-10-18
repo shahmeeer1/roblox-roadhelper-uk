@@ -30,7 +30,7 @@ local RoadDefaults = require("./RoadDefaults")
 
 local RoadMath = {}
 
-export type SegmentKind = "Straight" | "Curve" | "Intersection" | "Split"
+export type SegmentKind = "Straight" | "Curve" | "Intersection" | "Split" | "Roundabout"
 -- Roads have a Blue and a Red end; intersections have one id per stub; Y
 -- splits have a stem and two branches
 export type EndpointId =
@@ -43,6 +43,40 @@ export type EndpointId =
 	| "Stem"
 	| "BranchLeft"
 	| "BranchRight"
+	-- A roundabout's centre: not an end that joins roads, just what selecting the
+	-- roundabout selects (see RoadMath.pickableEndpointIds)
+	| "Centre"
+
+-- Roundabouts (see the Roundabouts section): one circle of the island
+-- outline, in the roundabout's local (pivot) space
+export type RoundaboutCircle = {
+	X: number,
+	Z: number,
+	Radius: number,
+}
+
+export type RoundaboutLayout = {
+	Circles: { RoundaboutCircle },
+	RingLanes: number,
+	LaneWidth: number,
+	-- The circulating carriageway's width: RingLanes * LaneWidth
+	RingWidth: number,
+	-- The footway around the outside
+	SidewalkWidth: number,
+	-- The raised apron inside the ring (0 for none), kept within the
+	-- smallest outline circle
+	ApronWidth: number,
+}
+
+-- One arc of a roundabout outline: a circle's boundary from angle From to To
+-- (radians, To >= From, angles measured in the local XZ plane as
+-- atan2(z, x)), after which a straight tangent edge runs on to the next
+-- piece's circle
+export type HullPiece = {
+	Circle: RoundaboutCircle,
+	From: number,
+	To: number,
+}
 
 -- The layout of a Y split, in its local (pivot) space: see the Y splits
 -- section
@@ -79,6 +113,8 @@ export type SegmentInfo = {
 	ThroughRoad: boolean?,
 	-- Y split only
 	Split: SplitLayout?,
+	-- Roundabout only: its island outline circles and ring width
+	Roundabout: RoundaboutLayout?,
 }
 
 export type Endpoint = {
@@ -109,12 +145,13 @@ local GENERATOR_KINDS: { [string]: SegmentKind } = {
 	CurveRoadGenerator = "Curve",
 	RoadIntersectionGenerator = "Intersection",
 	RoadSplitGenerator = "Split",
+	RoundaboutGenerator = "Roundabout",
 }
 
--- Junctions (intersections and Y splits) are flat with fixed exits: their
--- ends have no adjust angles and are only moved as a whole
+-- Junctions (intersections, Y splits and roundabouts) are flat with fixed
+-- exits: their ends have no adjust angles and are only moved as a whole
 function RoadMath.isJunction(kind: SegmentKind): boolean
-	return kind == "Intersection" or kind == "Split"
+	return kind == "Intersection" or kind == "Split" or kind == "Roundabout"
 end
 
 --------------------------------------------------------------------------------
@@ -308,6 +345,192 @@ function RoadMath.splitLayout(model: Instance): SplitLayout
 	}
 end
 
+--------------------------------------------------------------------------------
+-- Roundabouts
+--------------------------------------------------------------------------------
+
+--[[
+	A roundabout's central island is outlined by the convex hull of one or
+	more circles (IslandShape, "x,z,radius;x,z,radius;..." in the local XZ
+	plane): one circle is a round island, two an oval, four a rounded square
+	or rectangle, more any convex shape. The circulating carriageway is the
+	band from the outline out to RingWidth beyond it, with a footway outside
+	that and an optional raised apron just inside the outline.
+
+	Offsetting a hull of circles by d is exactly the hull of the same circles
+	with every radius grown by d (the tangent edges keep their directions), so
+	every edge of the roundabout is the same outline at a different offset,
+	and can never cross itself.
+]]
+
+-- (Always a fresh table: callers edit the circles they get)
+function RoadMath.parseIslandShape(value: any): { RoundaboutCircle }
+	local circles: { RoundaboutCircle } = {}
+	if typeof(value) == "string" then
+		for _, entry in string.split(value, ";") do
+			local parts = string.split(entry, ",")
+			local x, z, r = tonumber(parts[1]), tonumber(parts[2]), tonumber(parts[3])
+			if x and z and r and #circles < RoadDefaults.RoundaboutMaxCorners then
+				table.insert(circles, { X = x, Z = z, Radius = math.max(r, 1) })
+			end
+		end
+	end
+	if #circles == 0 then
+		return { { X = 0, Z = 0, Radius = RoadDefaults.RoundaboutIslandRadius } }
+	end
+	return circles
+end
+
+function RoadMath.serializeIslandShape(circles: { RoundaboutCircle }): string
+	local entries = {}
+	local function tidy(value: number): string
+		return tostring(math.round(value * 100) / 100)
+	end
+	for _, circle in circles do
+		table.insert(entries, `{tidy(circle.X)},{tidy(circle.Z)},{tidy(circle.Radius)}`)
+	end
+	return table.concat(entries, ";")
+end
+
+function RoadMath.roundaboutLayout(model: Instance): RoundaboutLayout
+	local circles = RoadMath.parseIslandShape(model:GetAttribute("IslandShape"))
+	local lanes = math.max(math.floor(getNumberAttribute(model, "RingLanes", RoadDefaults.RoundaboutRingLanes)), 1)
+	local laneWidth = getNumberAttribute(model, "LaneWidth", RoadDefaults.LaneWidth)
+	local smallest = math.huge
+	for _, circle in circles do
+		smallest = math.min(smallest, circle.Radius)
+	end
+	return {
+		Circles = circles,
+		RingLanes = lanes,
+		LaneWidth = laneWidth,
+		RingWidth = lanes * laneWidth,
+		SidewalkWidth = math.max(getNumberAttribute(model, "SidewalkWidth", RoadDefaults.SidewalkWidth), 0),
+		ApronWidth = math.clamp(
+			getNumberAttribute(model, "ApronWidth", RoadDefaults.RoundaboutApronWidth),
+			0,
+			math.max(smallest - 1, 0)
+		),
+	}
+end
+
+-- The box a roundabout needs around its pivot (it's laid out symmetrically,
+-- since the outline circles are in pivot space)
+function RoadMath.roundaboutSize(layout: RoundaboutLayout): Vector3
+	local outer = layout.RingWidth + layout.SidewalkWidth
+	local extentX, extentZ = 0, 0
+	for _, circle in layout.Circles do
+		extentX = math.max(extentX, math.abs(circle.X) + circle.Radius + outer)
+		extentZ = math.max(extentZ, math.abs(circle.Z) + circle.Radius + outer)
+	end
+	return Vector3.new(2 * extentX, 0, 2 * extentZ)
+end
+
+--[[
+	The convex hull of circles, as the arcs of the circles on it in order
+	around the outline (counterclockwise in the XZ plane taken as math x, y
+	axes), each followed by the straight tangent edge to the next. Circles
+	inside another circle, or not reaching the hull, don't appear.
+]]
+function RoadMath.roundaboutHull(circles: { RoundaboutCircle }): { HullPiece }
+	-- Drop circles contained in another (of two identical circles, keep the
+	-- first)
+	local kept: { RoundaboutCircle } = {}
+	for i, a in circles do
+		local contained = false
+		for j, b in circles do
+			if i ~= j then
+				local distance = math.sqrt((a.X - b.X) ^ 2 + (a.Z - b.Z) ^ 2)
+				local slack = b.Radius - (distance + a.Radius)
+				if slack > 1e-6 or (math.abs(slack) <= 1e-6 and j < i) then
+					contained = true
+					break
+				end
+			end
+		end
+		if not contained then
+			table.insert(kept, a)
+		end
+	end
+	if #kept == 1 then
+		return { { Circle = kept[1], From = 0, To = 2 * math.pi } }
+	end
+
+	-- Each hull circle's outgoing edge: the outer tangent to another circle
+	-- with every circle on its inner side. Travelling counterclockwise, the
+	-- outward normal n is to the right, and the tangent condition is
+	-- n . (cj - ci) = ri - rj.
+	local outgoing: { [number]: { To: number, NX: number, NZ: number, Length: number } } = {}
+	for i, a in kept do
+		for j, b in kept do
+			if i == j then
+				continue
+			end
+			local dx, dz = b.X - a.X, b.Z - a.Z
+			local length = math.sqrt(dx * dx + dz * dz)
+			if length < 1e-6 then
+				continue
+			end
+			local cosine = (a.Radius - b.Radius) / length
+			if math.abs(cosine) >= 1 then
+				continue
+			end
+			local ux, uz = dx / length, dz / length
+			local sine = math.sqrt(1 - cosine * cosine)
+			-- n = cosine * u - sine * (left perpendicular of u)
+			local nx = cosine * ux + sine * uz
+			local nz = cosine * uz - sine * ux
+			local support = nx * a.X + nz * a.Z + a.Radius
+			local valid = true
+			for _, c in kept do
+				if nx * c.X + nz * c.Z + c.Radius > support + 1e-6 then
+					valid = false
+					break
+				end
+			end
+			-- Of edges along the same line (collinear circles), take the
+			-- longest, skipping circles that only touch it
+			if valid and (outgoing[i] == nil or length > outgoing[i].Length) then
+				outgoing[i] = { To = j, NX = nx, NZ = nz, Length = length }
+			end
+		end
+	end
+
+	local start = nil
+	for i in kept do
+		if outgoing[i] then
+			start = i
+			break
+		end
+	end
+	if not start then
+		return { { Circle = kept[1], From = 0, To = 2 * math.pi } }
+	end
+	local order = { start }
+	local current = start
+	for _ = 1, #kept do
+		local nextIndex = outgoing[current].To
+		if nextIndex == start or not outgoing[nextIndex] then
+			break
+		end
+		table.insert(order, nextIndex)
+		current = nextIndex
+	end
+
+	local pieces: { HullPiece } = {}
+	for m, index in order do
+		local incoming = outgoing[order[(m - 2) % #order + 1]]
+		local leaving = outgoing[index]
+		local from = math.atan2(incoming.NZ, incoming.NX)
+		local to = math.atan2(leaving.NZ, leaving.NX)
+		while to < from do
+			to += 2 * math.pi
+		end
+		table.insert(pieces, { Circle = kept[index], From = from, To = to })
+	end
+	return pieces
+end
+
 function RoadMath.getSegmentInfo(instance: Instance): SegmentInfo?
 	if instance.ClassName ~= "ProceduralModel" then
 		return nil
@@ -339,6 +562,18 @@ function RoadMath.getSegmentInfo(instance: Instance): SegmentInfo?
 			Size = (model :: any).Size :: Vector3,
 			Pivot = model:GetPivot(),
 			Flip = false,
+		}
+	end
+	if kind == "Roundabout" then
+		local layout = RoadMath.roundaboutLayout(model)
+		return {
+			Model = model,
+			Kind = kind,
+			Width = layout.RingWidth,
+			Size = (model :: any).Size :: Vector3,
+			Pivot = model:GetPivot(),
+			Flip = false,
+			Roundabout = layout,
 		}
 	end
 	if kind == "Split" then
@@ -464,7 +699,11 @@ end
 
 function RoadMath.getEndpoint(segment: SegmentInfo, id: EndpointId): Endpoint
 	local localFrame
-	if segment.Kind == "Intersection" then
+	if id == "Centre" then
+		-- Facing straight up, so it can never pass for a joint with a road end
+		local position = Vector3.new(0, -segment.Size.Y / 2, 0)
+		localFrame = CFrame.lookAt(position, position + Vector3.yAxis, Vector3.zAxis)
+	elseif segment.Kind == "Intersection" then
 		localFrame = intersectionEndpointFrame(segment, id)
 	elseif segment.Kind == "Split" then
 		localFrame = splitEndpointFrame(segment, id)
@@ -492,8 +731,29 @@ function RoadMath.endpointIds(segment: SegmentInfo): { EndpointId }
 		return ids
 	elseif segment.Kind == "Split" then
 		return { "Stem", "BranchLeft", "BranchRight" }
+	elseif segment.Kind == "Roundabout" then
+		-- No arms yet, so no ends that join roads
+		return {}
 	end
 	return { "Blue", "Red" }
+end
+
+-- The ends that can be picked (selected) in the viewport: the joinable ends,
+-- plus a roundabout's centre, which selects the roundabout itself
+function RoadMath.pickableEndpointIds(segment: SegmentInfo): { EndpointId }
+	local ids = table.clone(RoadMath.endpointIds(segment))
+	if segment.Kind == "Roundabout" then
+		table.insert(ids, "Centre")
+	end
+	return ids
+end
+
+function RoadMath.pickableEndpoints(segment: SegmentInfo): { Endpoint }
+	local endpoints = {}
+	for _, id in RoadMath.pickableEndpointIds(segment) do
+		table.insert(endpoints, RoadMath.getEndpoint(segment, id))
+	end
+	return endpoints
 end
 
 function RoadMath.allEndpoints(segment: SegmentInfo): { Endpoint }

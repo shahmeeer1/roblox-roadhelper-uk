@@ -51,10 +51,11 @@ function EndpointPickHandles:hitTest(mouseRay, ignoreExtraThreshold)
 		local segment = RoadMath.segmentFromDescendant(result.Instance)
 		if segment then
 			-- Offer whichever of the segment's endpoints is nearest (roads
-			-- have two; intersections have one per stub)
+			-- have two; intersections have one per stub; a roundabout offers
+			-- its centre, which selects the whole roundabout)
 			local best: RoadMath.Endpoint? = nil
 			local bestDistance = math.huge
-			for _, endpoint in RoadMath.allEndpoints(segment) do
+			for _, endpoint in RoadMath.pickableEndpoints(segment) do
 				local distance = (endpoint.WorldCFrame.Position - result.Position).Magnitude
 				if distance < bestDistance then
 					bestDistance = distance
@@ -82,7 +83,20 @@ function EndpointPickHandles:render(hoveredHandleId)
 	-- rectangle laid over the end of the segment about to be picked.
 	local selected = self._props.GetSelectedEndpoint()
 	local hover = self._hoverEndpoint
-	if hoveredHandleId == HOVER_HANDLE_ID and hover and not isSameEndpoint(hover, selected) then
+	if hoveredHandleId == HOVER_HANDLE_ID and hover and hover.Id == "Centre" and not isSameEndpoint(hover, selected) then
+		-- A roundabout: a flat marker over its centre
+		children.HoverRect = Roact.createElement("CylinderHandleAdornment", {
+			Adornee = workspace.Terrain,
+			-- A cylinder adornment's axis is its Z: lay it flat
+			CFrame = CFrame.new(hover.WorldCFrame.Position + Vector3.yAxis * 0.5) * CFrame.Angles(math.rad(90), 0, 0),
+			Height = HOVER_RECT_THICKNESS,
+			Radius = 12,
+			Color3 = PURPLE,
+			Transparency = 0.5,
+			AlwaysOnTop = true,
+			ZIndex = 0,
+		})
+	elseif hoveredHandleId == HOVER_HANDLE_ID and hover and not isSameEndpoint(hover, selected) then
 		-- Note: hovering the mate of the selected endpoint deliberately DOES
 		-- show hover UX; picking the other side of a joint is meaningful
 		-- (especially road vs intersection sides, which offer different

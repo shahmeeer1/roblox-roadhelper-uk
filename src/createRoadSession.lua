@@ -37,6 +37,7 @@ local PartialRotateHandleView = require("./Dragger/PartialRotateHandleView")
 local EndpointMoveHandles = require("./Handles/EndpointMoveHandles")
 local EndpointRotateHandles = require("./Handles/EndpointRotateHandles")
 local AddHandles = require("./Handles/AddHandles")
+local IslandShapeHandles = require("./Handles/IslandShapeHandles")
 
 local REFRESH_INTERVAL = 0.25
 local JOINT_SEARCH_RADIUS = 10
@@ -84,6 +85,11 @@ export type SelectionState = {
 	MiniRoundabout: boolean,
 	MiniRoundaboutRaised: boolean,
 	MiniRoundaboutDiameter: number,
+	RoundaboutCorners: number?,
+	SelectedCorner: number?,
+	SelectedCornerRadius: number?,
+	RingLanes: number?,
+	ApronWidth: number?,
 	LaneWidth: number,
 	SidewalkWidth: number,
 	IntersectionAngle: number,
@@ -157,6 +163,7 @@ local GENERATOR_MODULE_NAMES: { [RoadMath.SegmentKind]: string } = {
 	Curve = "CurveRoadGenerator",
 	Intersection = "RoadIntersectionGenerator",
 	Split = "RoadSplitGenerator",
+	Roundabout = "RoundaboutGenerator",
 }
 
 -- Build a brand new segment from the generator templates packaged inside the
@@ -174,6 +181,7 @@ local function createFallbackSegmentModel(kind: RoadMath.SegmentKind): Model?
 		then "StraightRoad"
 		elseif kind == "Curve" then "CurveRoad"
 		elseif kind == "Split" then "RoadSplit"
+		elseif kind == "Roundabout" then "Roundabout"
 		else "RoadIntersection"
 	local generator = Templates:FindFirstChild(GENERATOR_MODULE_NAMES[kind])
 	if generator then
@@ -287,7 +295,7 @@ local function createRoadSession(plugin: Plugin)
 				if kind and segment.Kind ~= kind then
 					continue
 				end
-				if not table.find(RoadMath.endpointIds(segment), id) then
+				if not table.find(RoadMath.pickableEndpointIds(segment), id) then
 					continue
 				end
 				local endpoint = RoadMath.getEndpoint(segment, id)
@@ -1560,6 +1568,125 @@ local function createRoadSession(plugin: Plugin)
 	end
 
 	--------------------------------------------------------------------------
+	-- Roundabouts
+	--------------------------------------------------------------------------
+
+	-- Selecting a roundabout selects its centre. Its island outline's
+	-- circles ("corners") are edited with IslandShapeHandles and the panel;
+	-- one corner at a time can be selected, for the panel to act on.
+	local selectedCorner: { Model: Model, Index: number }? = nil
+
+	-- The selected roundabout, if the selection is one
+	local function getSelectedRoundabout(): (Model?, RoadMath.RoundaboutLayout?)
+		local selected = getSelectedEndpoint()
+		if not selected or selected.Id ~= "Centre" or not selected.Segment.Roundabout then
+			return nil, nil
+		end
+		return selected.Segment.Model, selected.Segment.Roundabout
+	end
+
+	local function getSelectedCornerIndex(model: Model, layout: RoadMath.RoundaboutLayout): number?
+		local corner = selectedCorner
+		if corner and corner.Model == model and corner.Index <= #layout.Circles then
+			return corner.Index
+		end
+		return nil
+	end
+
+	-- Size a roundabout's box to its layout (its pivot stays at the centre
+	-- of its outline circles' space, so nothing moves)
+	local function fitRoundaboutSize(model: Model)
+		(model :: any).Size = RoadMath.roundaboutSize(RoadMath.roundaboutLayout(model))
+	end
+
+	local function writeIslandShape(model: Model, circles: { RoadMath.RoundaboutCircle })
+		model:SetAttribute("IslandShape", RoadMath.serializeIslandShape(circles))
+		fitRoundaboutSize(model)
+	end
+
+	-- Island shapes to start from (circle centres and radii in studs)
+	local ISLAND_SHAPES: { [string]: string } = {
+		Circle = "0,0,60",
+		Oval = "-60,0,45;60,0,45",
+		Square = "-45,-45,20;45,-45,20;45,45,20;-45,45,20",
+		Rectangle = "-90,-40,20;90,-40,20;90,40,20;-90,40,20",
+		Triangle = "0,-60,20;56,36,20;-56,36,20",
+	}
+
+	-- Drag edits from IslandShapeHandles: a recording spans the whole drag
+	local function startIslandEdit()
+		gestureActive = true
+		beginRecording("Shape Roundabout")
+	end
+	local function endIslandEdit()
+		finishRecording()
+		gestureActive = false
+		updateDragger()
+		changeSignal:Fire()
+	end
+	local function editCorner(index: number, edit: (RoadMath.RoundaboutCircle) -> ())
+		local model, layout = getSelectedRoundabout()
+		if not model or not layout or not layout.Circles[index] then
+			return
+		end
+		local circles = layout.Circles
+		edit(circles[index])
+		writeIslandShape(model, circles)
+		changeSignal:Fire()
+	end
+
+	-- Panel actions on the selected roundabout
+	local function roundaboutAction(action: string, value: any)
+		local model, layout = getSelectedRoundabout()
+		if not model or not layout then
+			return
+		end
+		local circles = layout.Circles
+		local index = getSelectedCornerIndex(model, layout)
+		beginRecording("Edit Roundabout")
+		if action == "Shape" and ISLAND_SHAPES[value] then
+			model:SetAttribute("IslandShape", ISLAND_SHAPES[value])
+			fitRoundaboutSize(model)
+			selectedCorner = nil
+		elseif action == "AddCorner" and #circles < RoadDefaults.RoundaboutMaxCorners then
+			-- A new corner beside the selected one (or the first): halfway to
+			-- the next, or off to the side of a lone circle
+			local from = circles[index or 1]
+			local nextCircle = circles[(index or 1) % #circles + 1]
+			local newCircle
+			if #circles == 1 then
+				newCircle = { X = from.X + from.Radius * 1.5, Z = from.Z, Radius = from.Radius }
+			else
+				newCircle = {
+					X = (from.X + nextCircle.X) / 2,
+					Z = (from.Z + nextCircle.Z) / 2,
+					Radius = (from.Radius + nextCircle.Radius) / 2,
+				}
+			end
+			local insertAt = (index or 1) + 1
+			table.insert(circles, insertAt, newCircle)
+			writeIslandShape(model, circles)
+			selectedCorner = { Model = model, Index = insertAt }
+		elseif action == "RemoveCorner" and index and #circles > 1 then
+			table.remove(circles, index)
+			writeIslandShape(model, circles)
+			selectedCorner = nil
+		elseif action == "CornerRadius" and index then
+			circles[index].Radius = math.max(value, 1)
+			writeIslandShape(model, circles)
+		elseif action == "RingLanes" then
+			model:SetAttribute("RingLanes", math.max(math.round(value), 1))
+			fitRoundaboutSize(model)
+		elseif action == "LaneWidth" or action == "SidewalkWidth" or action == "ApronWidth" then
+			model:SetAttribute(action, math.max(value, 0))
+			fitRoundaboutSize(model)
+		end
+		finishRecording()
+		updateDragger()
+		changeSignal:Fire()
+	end
+
+	--------------------------------------------------------------------------
 	-- Handles
 	--------------------------------------------------------------------------
 
@@ -1723,7 +1850,8 @@ local function createRoadSession(plugin: Plugin)
 		AddHandles.new(draggerContext, {
 			GetOpenEndpoint = function()
 				local endpoint = getSelectedEndpoint()
-				if not endpoint then
+				-- A roundabout's centre isn't a road end
+				if not endpoint or endpoint.Id == "Centre" then
 					return nil
 				end
 				if getPartnerEndpoint() then
@@ -1734,6 +1862,40 @@ local function createRoadSession(plugin: Plugin)
 			StartAdd = startAdd,
 			ApplyAddDrag = applyAddDrag,
 			EndAdd = endAdd,
+		}),
+		IslandShapeHandles.new(draggerContext, {
+			GetRoundabout = function()
+				local model, layout = getSelectedRoundabout()
+				if not model or not layout then
+					return nil
+				end
+				return {
+					Model = model,
+					Pivot = model:GetPivot(),
+					Circles = layout.Circles,
+					Selected = getSelectedCornerIndex(model, layout),
+				}
+			end,
+			SelectCorner = function(index: number)
+				local model = getSelectedRoundabout()
+				if model then
+					selectedCorner = { Model = model, Index = index }
+					changeSignal:Fire()
+				end
+			end,
+			StartEdit = startIslandEdit,
+			MoveCorner = function(index: number, x: number, z: number)
+				editCorner(index, function(circle)
+					circle.X = x
+					circle.Z = z
+				end)
+			end,
+			SetCornerRadius = function(index: number, radius: number)
+				editCorner(index, function(circle)
+					circle.Radius = math.max(radius, 1)
+				end)
+			end,
+			EndEdit = endIslandEdit,
 		}),
 		EndpointPickHandles.new(draggerContext, {
 			GetSelectedEndpoint = getSelectedEndpoint,
@@ -1853,6 +2015,10 @@ local function createRoadSession(plugin: Plugin)
 		local laneAxisSuffix = RoadMath.laneSuffix(selected.Segment.Kind, selected.Id)
 		local lanesOut, lanesIn = RoadMath.getLaneCounts(selected)
 		local splitLayout = selected.Segment.Split
+		local roundabout = selected.Segment.Roundabout
+		local roundaboutCorner = if roundabout
+			then getSelectedCornerIndex(selected.Segment.Model, roundabout)
+			else nil
 		local canChangeLanes = RoadMath.supportsLaneChange(selected.Segment.Kind)
 		local sameLanes = not RoadMath.hasLaneChange(selected.Segment)
 		local lanesDiffer = false
@@ -1901,6 +2067,15 @@ local function createRoadSession(plugin: Plugin)
 			MiniRoundaboutRaised = selected.Segment.Model:GetAttribute("MiniRoundaboutRaised") == true,
 			MiniRoundaboutDiameter = (selected.Segment.Model:GetAttribute("MiniRoundaboutDiameter") :: number?)
 				or RoadDefaults.MiniRoundaboutDiameter,
+			-- Roundabouts: the outline's circle count, the selected one and
+			-- its radius, the ring's lanes and the apron
+			RoundaboutCorners = if roundabout then #roundabout.Circles else nil,
+			SelectedCorner = roundaboutCorner,
+			SelectedCornerRadius = if roundabout and roundaboutCorner
+				then roundabout.Circles[roundaboutCorner].Radius
+				else nil,
+			RingLanes = if roundabout then roundabout.RingLanes else nil,
+			ApronWidth = if roundabout then roundabout.ApronWidth else nil,
 			LaneWidth = (selected.Segment.Model:GetAttribute("LaneWidth" .. laneAxisSuffix) :: number?) or RoadDefaults.LaneWidth,
 			SidewalkWidth = (selected.Segment.Model:GetAttribute("SidewalkWidth") :: number?) or RoadDefaults.SidewalkWidth,
 			IntersectionAngle = (selected.Segment.Model:GetAttribute("IntersectionAngle") :: number?) or RoadDefaults.IntersectionAngle,
@@ -2280,6 +2455,71 @@ local function createRoadSession(plugin: Plugin)
 		updateDragger()
 		changeSignal:Fire()
 	end
+
+	-- Add a roundabout in front of the camera (UI button): a round island
+	-- ringed by the default circulating carriageway, in the preset's (or a
+	-- nearby roundabout's) appearance
+	function session.AddRoundaboutInFrontOfCamera(alignToWorld: boolean?, presetAttributes: { [string]: any }?)
+		local camera = workspace.CurrentCamera
+		if not camera then
+			return
+		end
+		local result = workspace:Raycast(camera.CFrame.Position, camera.CFrame.LookVector * 800)
+		local target = if result
+			then result.Position
+			else camera.CFrame.Position + camera.CFrame.LookVector * 300
+
+		local template = findTemplate("Roundabout", target)
+		local beforeSelection = snapshotSelection()
+		beginRecording("Add Roundabout")
+		local newModel: Model?
+		if template then
+			newModel = template.Model:Clone()
+			-- Keep the cloned geometry (see the other add paths)
+		else
+			newModel = createFallbackSegmentModel("Roundabout")
+		end
+		if not newModel then
+			finishRecording()
+			warn("RoadHelper: No Roundabout available to use as a template.")
+			return
+		end
+		if presetAttributes then
+			-- Appearance and lane width from the preset; the ring has its own
+			-- lane count
+			for name, value in presetAttributes do
+				if name ~= "LaneCountForward" and name ~= "LaneCountBackward" then
+					newModel:SetAttribute(name, value)
+				end
+			end
+		end
+		newModel:SetAttribute("IslandShape", ISLAND_SHAPES.Circle)
+		newModel:SetAttribute("RingLanes", RoadDefaults.RoundaboutRingLanes)
+		fitRoundaboutSize(newModel)
+
+		local look = camera.CFrame.LookVector * Vector3.new(1, 0, 1)
+		look = if look.Magnitude > 0.01 then look.Unit else Vector3.zAxis
+		local yaw = math.atan2(look.X, look.Z)
+		if alignToWorld then
+			yaw = math.round(yaw / (math.pi / 2)) * (math.pi / 2)
+		end
+		newModel:PivotTo(CFrame.Angles(0, yaw, 0) + target)
+		newModel.Parent = if template then template.Model.Parent else workspace
+
+		selectedRef = { Model = newModel, Id = "Centre" }
+		selectedCorner = nil
+		if activeRecordingName then
+			pushSelectionHistory(activeRecordingName, beforeSelection, snapshotSelection())
+		end
+		finishRecording()
+		updateDragger()
+		changeSignal:Fire()
+	end
+
+	-- Panel actions on the selected roundabout: "Shape" (a preset name),
+	-- "AddCorner", "RemoveCorner", "CornerRadius", "RingLanes", "LaneWidth",
+	-- "SidewalkWidth", "ApronWidth"
+	session.RoundaboutAction = roundaboutAction
 
 	function session.Destroy()
 		sessionAlive = false

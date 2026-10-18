@@ -22,6 +22,18 @@ return function(t: TestTypes.TestContext)
 		end
 	end)
 
+	t.test("roundabout generator matches the defaults", function()
+		local RoadMath = require("./RoadMath")
+		local attributes = require("./Templates/RoundaboutGenerator").Attributes
+		t.expect(attributes.LaneWidth).toBe(RoadDefaults.LaneWidth)
+		t.expect(attributes.SidewalkWidth).toBe(RoadDefaults.SidewalkWidth)
+		t.expect(attributes.RingLanes).toBe(RoadDefaults.RoundaboutRingLanes)
+		t.expect(attributes.ApronWidth).toBe(RoadDefaults.RoundaboutApronWidth)
+		local island = RoadMath.parseIslandShape(attributes.IslandShape)
+		t.expect(#island).toBe(1)
+		t.expect(island[1].Radius).toBe(RoadDefaults.RoundaboutIslandRadius)
+	end)
+
 	t.test("split generator matches the defaults", function()
 		local attributes = require("./Templates/RoadSplitGenerator").Attributes
 		t.expect(attributes.LaneWidth).toBe(RoadDefaults.LaneWidth)

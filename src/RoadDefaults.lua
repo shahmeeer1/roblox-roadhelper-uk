@@ -31,6 +31,13 @@ local RoadDefaults = {
 	MiniRoundaboutDiameter = 20,
 	MiniRoundaboutMinDiameter = 7,
 	MiniRoundaboutMaxDiameter = 26,
+	-- Roundabouts: a new one's island is a circle of this radius (about 9 m),
+	-- ringed by a two-lane circulating carriageway. Islands are outlined by up
+	-- to RoundaboutMaxCorners circles.
+	RoundaboutIslandRadius = 60,
+	RoundaboutRingLanes = 2,
+	RoundaboutApronWidth = 0,
+	RoundaboutMaxCorners = 12,
 }
 
 -- Total road width with the default lane layout

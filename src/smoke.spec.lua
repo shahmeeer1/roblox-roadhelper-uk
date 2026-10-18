@@ -36,5 +36,7 @@ return function(t: TestTypes.TestContext)
 		require("./Templates/CurveRoadGenerator")
 		require("./Templates/RoadIntersectionGenerator")
 		require("./Templates/RoadSplitGenerator")
+		require("./Templates/RoundaboutGenerator")
+		require("./Handles/IslandShapeHandles")
 	end)
 end

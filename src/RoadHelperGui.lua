@@ -41,6 +41,9 @@ local ROADHELPER_CONFIG: PluginGuiTypes.PluginGuiConfig = {
 local function describeStatus(state: createRoadSession.SelectionState): string
 	if state.Kind == "none" then
 		return "Click the end of a road segment to select that endpoint."
+	elseif (state :: any).SegmentKind == "Roundabout" then
+		return "<b>Roundabout selected.</b>"
+			.. "\nDrag the white knobs to reshape the island and the blue knobs to resize its corners; the central handles move the whole roundabout."
 	elseif (state :: any).SegmentKind == "Intersection" then
 		local junction = if (state :: any).MiniRoundabout then "Mini roundabout" else "Intersection"
 		if state.Kind == "open" then
@@ -185,8 +188,8 @@ local function ParametersPanel(props: {
 				else nil,
 		})
 	end
-	if (state :: any).SegmentKind == "Split" then
-		-- A split is flat with fixed exits: no angles to edit
+	if (state :: any).SegmentKind == "Split" or (state :: any).SegmentKind == "Roundabout" then
+		-- Splits and roundabouts are flat: no angles to edit
 		return e(SubPanel, {
 			Title = "Parameters (Attributes)",
 			Padding = UDim.new(0, 6),
@@ -194,7 +197,7 @@ local function ParametersPanel(props: {
 		}, {
 			HaveSkirt = e(HelpGui.WithHelpIcon, {
 				Help = e(HelpGui.BasicTooltip, {
-					HelpRichText = "Adds a sloped fill skirt along the split's outer edges that ramps down into the surrounding terrain.",
+					HelpRichText = "Adds a sloped fill skirt along the outer edges that ramps down into the surrounding terrain.",
 				}),
 				LayoutOrder = 1,
 				Subject = e(Checkbox, {
@@ -282,8 +285,8 @@ local function DetailPanel(props: {
 	LayoutOrder: number?,
 })
 	local state = props.SelectionState
-	-- Y splits don't tessellate by angle (they have no turns or slopes)
-	if state.Kind == "none" or (state :: any).SegmentKind == "Split" then
+	-- Y splits and roundabouts don't tessellate by angle
+	if state.Kind == "none" or (state :: any).SegmentKind == "Split" or (state :: any).SegmentKind == "Roundabout" then
 		return nil :: any
 	end
 	local chips: { [string]: any } = {
@@ -391,7 +394,8 @@ local function SizingPanel(props: {
 	LayoutOrder: number?,
 })
 	local state = props.SelectionState
-	if state.Kind == "none" then
+	-- Roundabouts have their own panel
+	if state.Kind == "none" or (state :: any).SegmentKind == "Roundabout" then
 		return nil :: any
 	end
 	local lanesEditable = (state :: any).LaneCountsEditable
@@ -636,6 +640,7 @@ local function AddPanel(props: {
 	UpdatedSettings: () -> (),
 	AddSegment: (kind: RoadMath.SegmentKind) -> (),
 	AddIntersection: (throughRoad: boolean, miniRoundabout: boolean?) -> (),
+	AddRoundabout: () -> (),
 	LayoutOrder: number?,
 })
 	-- With an endpoint selected the add handles in the viewport are the way to
@@ -763,20 +768,46 @@ local function AddPanel(props: {
 				}),
 			}),
 		}),
-		MiniRoundaboutButton = e("Frame", {
+		RoundaboutButtons = e("Frame", {
 			Size = UDim2.new(1, 0, 0, 0),
 			AutomaticSize = Enum.AutomaticSize.Y,
 			BackgroundTransparency = 1,
 			LayoutOrder = nextOrder(),
 		}, {
-			Button = e(OperationButton, {
-				Text = "Mini Roundabout",
-				Height = 28,
-				Disabled = false,
-				Color = Colors.ACTION_BLUE,
-				OnClick = function()
-					props.AddIntersection(true, true)
-				end,
+			ListLayout = e("UIListLayout", {
+				SortOrder = Enum.SortOrder.LayoutOrder,
+				FillDirection = Enum.FillDirection.Horizontal,
+				Padding = UDim.new(0, 4),
+			}),
+			MiniButton = e("Frame", {
+				Size = UDim2.new(0.5, -2, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				BackgroundTransparency = 1,
+				LayoutOrder = 1,
+			}, {
+				Button = e(OperationButton, {
+					Text = "Mini Roundabout",
+					Height = 28,
+					Disabled = false,
+					Color = Colors.ACTION_BLUE,
+					OnClick = function()
+						props.AddIntersection(true, true)
+					end,
+				}),
+			}),
+			RoundaboutButton = e("Frame", {
+				Size = UDim2.new(0.5, -2, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				BackgroundTransparency = 1,
+				LayoutOrder = 2,
+			}, {
+				Button = e(OperationButton, {
+					Text = "Roundabout",
+					Height = 28,
+					Disabled = false,
+					Color = Colors.ACTION_BLUE,
+					OnClick = props.AddRoundabout,
+				}),
 			}),
 		}),
 	})
@@ -903,6 +934,166 @@ local function CloseButton(props: {
 	})
 end
 
+local ISLAND_SHAPE_NAMES = { "Circle", "Oval", "Square", "Rectangle", "Triangle" }
+
+local function RoundaboutPanel(props: {
+	SelectionState: createRoadSession.SelectionState,
+	RoundaboutAction: (action: string, value: any) -> (),
+	LayoutOrder: number?,
+})
+	local state = props.SelectionState :: any
+	if state.Kind == "none" or state.SegmentKind ~= "Roundabout" then
+		return nil :: any
+	end
+	local shapeChips: { [string]: any } = {
+		ListLayout = e("UIListLayout", {
+			FillDirection = Enum.FillDirection.Horizontal,
+			HorizontalAlignment = Enum.HorizontalAlignment.Left,
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			Wraps = true,
+		}),
+		Corner = e("UICorner", {
+			CornerRadius = UDim.new(0, 4),
+		}),
+	}
+	for index, shape in ISLAND_SHAPE_NAMES do
+		shapeChips[shape] = e(ChipForToggle, {
+			Text = shape,
+			IsCurrent = false,
+			LayoutOrder = index,
+			OnClick = function()
+				props.RoundaboutAction("Shape", shape)
+			end,
+		})
+	end
+	local function halfButton(text: string, order: number, disabled: boolean, onClick: () -> ())
+		return e("Frame", {
+			Size = UDim2.new(0.5, -2, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			LayoutOrder = order,
+		}, {
+			Button = e(OperationButton, {
+				Text = text,
+				Height = 28,
+				Disabled = disabled,
+				Color = Colors.ACTION_BLUE,
+				OnClick = onClick,
+			}),
+		})
+	end
+	local function numberField(label: string, help: string, order: number, value: number, minimum: number, action: string)
+		return e(HelpGui.WithHelpIcon, {
+			Help = e(HelpGui.BasicTooltip, {
+				HelpRichText = help,
+			}),
+			LayoutOrder = order,
+			Subject = e(NumberInput, {
+				Label = label,
+				Value = value,
+				ValueEntered = function(entered: number): number?
+					local clamped = math.max(entered, minimum)
+					props.RoundaboutAction(action, clamped)
+					return clamped
+				end,
+			}),
+		})
+	end
+	local selectedCorner = state.SelectedCorner
+	return e(SubPanel, {
+		Title = "Roundabout",
+		Padding = UDim.new(0, 6),
+		LayoutOrder = props.LayoutOrder,
+	}, {
+		Shapes = e(HelpGui.WithHelpIcon, {
+			Help = e(HelpGui.BasicTooltip, {
+				HelpRichText = "Start the island from a shape. The island is outlined around one or more circles: drag the white knobs to move them and the blue knobs to resize them, or add and remove circles below.",
+			}),
+			LayoutOrder = 1,
+			Subject = e("Frame", {
+				Size = UDim2.new(1, 0, 0, 0),
+				BorderSizePixel = 0,
+				BackgroundColor3 = Colors.ACTION_BLUE,
+				AutomaticSize = Enum.AutomaticSize.Y,
+			}, shapeChips),
+		}),
+		CornerButtons = e("Frame", {
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			LayoutOrder = 2,
+		}, {
+			ListLayout = e("UIListLayout", {
+				SortOrder = Enum.SortOrder.LayoutOrder,
+				FillDirection = Enum.FillDirection.Horizontal,
+				Padding = UDim.new(0, 4),
+			}),
+			Add = halfButton("Add Corner", 1, state.RoundaboutCorners >= RoadDefaults.RoundaboutMaxCorners, function()
+				props.RoundaboutAction("AddCorner")
+			end),
+			Remove = halfButton("Remove Corner", 2, selectedCorner == nil or state.RoundaboutCorners <= 1, function()
+				props.RoundaboutAction("RemoveCorner")
+			end),
+		}),
+		CornerRadius = if selectedCorner
+			then numberField(
+				"Corner Radius",
+				"The selected circle's radius in studs. The island is the shape wrapping all its circles, so this rounds that corner (or sizes a round island).",
+				3,
+				state.SelectedCornerRadius,
+				1,
+				"CornerRadius"
+			)
+			else nil,
+		CornerHint = if not selectedCorner
+			then e("TextLabel", {
+				Size = UDim2.new(1, 0, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				BackgroundTransparency = 1,
+				TextColor3 = Colors.OFFWHITE,
+				Text = "Click a white knob to select a corner.",
+				TextWrapped = true,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				Font = Enum.Font.SourceSans,
+				TextSize = 16,
+				LayoutOrder = 3,
+			})
+			else nil,
+		RingLanes = numberField(
+			"Ring Lanes",
+			"Lanes on the circulating carriageway (all one way: clockwise when driving on the left).",
+			4,
+			state.RingLanes,
+			1,
+			"RingLanes"
+		),
+		LaneWidth = numberField(
+			"Lane Width",
+			"Width of each circulating lane in studs.",
+			5,
+			state.LaneWidth,
+			1,
+			"LaneWidth"
+		),
+		SidewalkWidth = numberField(
+			"Footway Width",
+			"Width of the footway around the outside, in studs. Zero leaves none.",
+			6,
+			state.SidewalkWidth,
+			0,
+			"SidewalkWidth"
+		),
+		ApronWidth = numberField(
+			"Apron Width",
+			"A raised apron around the island that long vehicles can run over, with a low kerb (common on UK roundabouts). Zero leaves none.",
+			7,
+			state.ApronWidth,
+			0,
+			"ApronWidth"
+		),
+	})
+end
+
 local function RoadHelperGui(props: {
 	GuiState: PluginGuiTypes.PluginGuiMode,
 	SelectionState: createRoadSession.SelectionState,
@@ -912,8 +1103,10 @@ local function RoadHelperGui(props: {
 	SetLaneMarkings: (mode: string) -> (),
 	SetSizing: (name: string, value: number) -> (),
 	SetSameLanesBothEnds: (same: boolean) -> (),
+	RoundaboutAction: (action: string, value: any) -> (),
 	AddSegment: (kind: RoadMath.SegmentKind) -> (),
 	AddIntersection: (throughRoad: boolean, miniRoundabout: boolean?) -> (),
+	AddRoundabout: () -> (),
 	CurrentSettings: Settings.RoadHelperSettings,
 	UpdatedSettings: () -> (),
 	HandleAction: (string) -> (),
@@ -958,12 +1151,18 @@ local function RoadHelperGui(props: {
 			SetSegmentAttribute = props.SetSegmentAttribute,
 			LayoutOrder = nextOrder(),
 		}),
+		RoundaboutPanel = e(RoundaboutPanel, {
+			SelectionState = props.SelectionState,
+			RoundaboutAction = props.RoundaboutAction,
+			LayoutOrder = nextOrder(),
+		}),
 		AddPanel = e(AddPanel, {
 			SelectionState = props.SelectionState,
 			CurrentSettings = props.CurrentSettings,
 			UpdatedSettings = props.UpdatedSettings,
 			AddSegment = props.AddSegment,
 			AddIntersection = props.AddIntersection,
+			AddRoundabout = props.AddRoundabout,
 			LayoutOrder = nextOrder(),
 		}),
 		PresetsPanel = e(PresetsPanel, {

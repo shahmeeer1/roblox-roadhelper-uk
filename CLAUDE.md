@@ -129,6 +129,15 @@ lazy-loads `src/main.lua` on first activation.
   mouth (crosswalks set back beyond it), and circulation arrows between the arms (clockwise
   when driving on the left). `MiniRoundaboutRaised` swaps the flush disc for a non-colliding
   dome (125 mm) in `MiniRoundaboutCentreColor`, ringed in white.
+- Roundabouts (`RoundaboutGenerator`, kind `"Roundabout"`, a junction) are their own kind, built
+  in phases (1: ring and island; 2: arms; 3: lanes inside the ring, spiral markings; 4: extras
+  such as signals). The island outline is the convex hull of circles (`IslandShape`,
+  `"x,z,r;..."` in pivot space; `RoadMath.roundaboutHull`, mirrored in the generator), so every
+  edge is the outline offset by some distance and can't self-intersect; concave islands would
+  need another method. Ring: `RingLanes` x `LaneWidth`, footway outside, optional raised
+  `ApronWidth` inside. Size is derived (`RoadMath.roundaboutSize`). Selecting a roundabout
+  selects its `"Centre"` pseudo-endpoint (pickable, faces up so it never joins anything; see
+  `RoadMath.pickableEndpointIds`). `IslandShapeHandles` drag the outline circles.
 - The Adjust dir/grade/bank rotations all pivot about the endpoint centre point, so endpoint
   *positions* are invariant under angle edits — only move edits Size/pivot.
 - Joints are purely spatial: two ends within `RoadMath.JOINT_TOLERANCE` facing opposite ways.

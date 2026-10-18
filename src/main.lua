@@ -107,6 +107,20 @@ return function(plugin: Plugin, panel: DockWidgetPluginGui, buttonClicked: Signa
 						session.SetSameLanesBothEnds(same)
 					end
 				end,
+				RoundaboutAction = function(action: string, value: any)
+					if session then
+						session.RoundaboutAction(action, value)
+					end
+				end,
+				AddRoundabout = function()
+					if session then
+						local preset = Presets.ByKey[activeSettings.SelectedPreset]
+						session.AddRoundaboutInFrontOfCamera(
+							activeSettings.AlignToWorld,
+							if preset then preset.Attributes else nil
+						)
+					end
+				end,
 				AddSegment = function(kind: RoadMath.SegmentKind)
 					if session then
 						local preset = Presets.ByKey[activeSettings.SelectedPreset]

@@ -866,4 +866,106 @@ return function(t: TestTypes.TestContext)
 		t.expect((rightHand.Split :: any).LeftForward).toBe(0)
 		t.expect((rightHand.Split :: any).RightForward).toBe(2)
 	end)
+
+	--
+	-- Roundabouts
+	--
+
+	local function sweeps(pieces: { RoadMath.HullPiece }): (number, { number })
+		local total = 0
+		local each = {}
+		for _, piece in pieces do
+			table.insert(each, piece.To - piece.From)
+			total += piece.To - piece.From
+		end
+		return total, each
+	end
+
+	t.test("roundabout: island shapes parse, round-trip, and fall back to a circle", function()
+		local circles = RoadMath.parseIslandShape("-90,-40,20; 90,-40,20;90,40,20;-90,40,20")
+		t.expect(#circles).toBe(4)
+		t.expect(circles[2].X).toBe(90)
+		t.expect(RoadMath.serializeIslandShape(circles)).toBe("-90,-40,20;90,-40,20;90,40,20;-90,40,20")
+		-- Garbage (or nothing) gives the default round island
+		local fallback = RoadMath.parseIslandShape("not a shape")
+		t.expect(#fallback).toBe(1)
+		t.expect(fallback[1].Radius).toBe(60)
+		-- Each call returns fresh circles, safe to edit
+		fallback[1].Radius = 5
+		t.expect(RoadMath.parseIslandShape(nil)[1].Radius).toBe(60)
+	end)
+
+	t.test("roundabout hull: circle, oval and rounded square", function()
+		local pieces = RoadMath.roundaboutHull({ { X = 0, Z = 0, Radius = 60 } })
+		t.expect(#pieces).toBe(1)
+		t.expect(math.abs(sweeps(pieces) - 2 * math.pi) < 1e-6).toBe(true)
+
+		pieces = RoadMath.roundaboutHull({ { X = -60, Z = 0, Radius = 45 }, { X = 60, Z = 0, Radius = 45 } })
+		t.expect(#pieces).toBe(2)
+		local total, each = sweeps(pieces)
+		t.expect(math.abs(total - 2 * math.pi) < 1e-6).toBe(true)
+		t.expect(math.abs(each[1] - math.pi) < 1e-6).toBe(true)
+
+		pieces = RoadMath.roundaboutHull(RoadMath.parseIslandShape("-45,-45,20;45,-45,20;45,45,20;-45,45,20"))
+		t.expect(#pieces).toBe(4)
+		total, each = sweeps(pieces)
+		t.expect(math.abs(total - 2 * math.pi) < 1e-6).toBe(true)
+		for _, sweep in each do
+			t.expect(math.abs(sweep - math.pi / 2) < 1e-6).toBe(true)
+		end
+	end)
+
+	t.test("roundabout hull: unequal, contained and collinear circles", function()
+		-- A big and a small circle: the big one wraps more than half way round
+		local pieces = RoadMath.roundaboutHull({ { X = 0, Z = 0, Radius = 40 }, { X = 100, Z = 0, Radius = 10 } })
+		t.expect(#pieces).toBe(2)
+		local total = sweeps(pieces)
+		t.expect(math.abs(total - 2 * math.pi) < 1e-6).toBe(true)
+		local big = if pieces[1].Circle.Radius == 40 then pieces[1] else pieces[2]
+		t.expect(big.To - big.From > math.pi).toBe(true)
+		-- The arcs meet the tangent edges: each piece's end normal is the
+		-- next piece's start normal (same direction)
+		for m, piece in pieces do
+			local nextPiece = pieces[m % #pieces + 1]
+			local a, b = piece.To, nextPiece.From
+			t.expect(math.abs(math.cos(a) - math.cos(b)) < 1e-6 and math.abs(math.sin(a) - math.sin(b)) < 1e-6).toBe(true)
+		end
+
+		-- A circle inside another doesn't shape the outline
+		pieces = RoadMath.roundaboutHull({ { X = 0, Z = 0, Radius = 60 }, { X = 10, Z = 0, Radius = 5 } })
+		t.expect(#pieces).toBe(1)
+		t.expect(pieces[1].Circle.Radius).toBe(60)
+
+		-- Three equal circles in a line: the middle one only touches the
+		-- outline
+		pieces = RoadMath.roundaboutHull({
+			{ X = -60, Z = 0, Radius = 20 },
+			{ X = 0, Z = 0, Radius = 20 },
+			{ X = 60, Z = 0, Radius = 20 },
+		})
+		t.expect(#pieces).toBe(2)
+	end)
+
+	t.test("roundabout: box size covers the ring and footway", function()
+		local fake: any = {
+			attrs = {
+				IslandShape = "-90,-40,20;90,-40,20;90,40,20;-90,40,20",
+				RingLanes = 2,
+				LaneWidth = 24,
+				SidewalkWidth = 8,
+				ApronWidth = 50,
+			},
+		}
+		fake.GetAttribute = function(self, name)
+			return self.attrs[name]
+		end
+		local layout = RoadMath.roundaboutLayout(fake)
+		t.expect(layout.RingWidth).toBe(48)
+		-- The apron stays within the smallest circle
+		t.expect(layout.ApronWidth).toBe(19)
+		-- Half extents: centre offset + radius + ring + footway
+		local size = RoadMath.roundaboutSize(layout)
+		t.expect(size.X).toBe(2 * (90 + 20 + 48 + 8))
+		t.expect(size.Z).toBe(2 * (40 + 20 + 48 + 8))
+	end)
 end
