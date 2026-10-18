@@ -581,4 +581,63 @@ return function(t: TestTypes.TestContext)
 		local joinEnd = RoadMath.getEndpoint(newSeg, joinId)
 		t.expect((joinEnd.WorldCFrame.Position - openEnd.WorldCFrame.Position).Magnitude < 0.001).toBe(true)
 	end)
+
+	--
+	-- Lanes
+	--
+
+	t.test("lanes: sanitize keeps whole non-negative counts, at least one lane", function()
+		local f, b = RoadMath.sanitizeLaneCounts(2.7, -1)
+		t.expect(f).toBe(2)
+		t.expect(b).toBe(0)
+		f, b = RoadMath.sanitizeLaneCounts(0, 0)
+		t.expect(f + b).toBe(1)
+	end)
+
+	t.test("lanes: out/in attribute names follow the end", function()
+		local outName, inName = RoadMath.laneAttributeNames("Straight", "Red")
+		t.expect(outName).toBe("LaneCountForward")
+		t.expect(inName).toBe("LaneCountBackward")
+		outName, inName = RoadMath.laneAttributeNames("Curve", "Blue")
+		t.expect(outName).toBe("LaneCountBackward")
+		t.expect(inName).toBe("LaneCountForward")
+		outName, inName = RoadMath.laneAttributeNames("Intersection", "ZMinus")
+		t.expect(outName).toBe("LaneCountBackwardZ")
+		t.expect(inName).toBe("LaneCountForwardZ")
+		outName, inName = RoadMath.laneAttributeNames("Intersection", "XPlus")
+		t.expect(outName).toBe("LaneCountForwardX")
+		t.expect(inName).toBe("LaneCountBackwardX")
+	end)
+
+	t.test("lanes: counts read relative to the end", function()
+		local seg = makeSegment("Straight", Vector3.new(WIDTH, 0, 200), CFrame.identity);
+		(seg.Model :: any).attrs.LaneCountForward = 2;
+		(seg.Model :: any).attrs.LaneCountBackward = 1
+		local lanesOut, lanesIn = RoadMath.getLaneCounts(RoadMath.getEndpoint(seg, "Red"))
+		t.expect(lanesOut).toBe(2)
+		t.expect(lanesIn).toBe(1)
+		lanesOut, lanesIn = RoadMath.getLaneCounts(RoadMath.getEndpoint(seg, "Blue"))
+		t.expect(lanesOut).toBe(1)
+		t.expect(lanesIn).toBe(2)
+	end)
+
+	t.test("lanes: travel directions carry through a same-colour joint", function()
+		-- A left turn joins a curve's red end to a straight's red end, so the
+		-- curve runs backwards relative to the straight: the 2 lanes leaving
+		-- the straight must be the 2 entering the curve and leaving its far
+		-- (blue) end.
+		local straight = makeSegment("Straight", Vector3.new(WIDTH, 0, 200), CFrame.identity);
+		(straight.Model :: any).attrs.LaneCountForward = 2;
+		(straight.Model :: any).attrs.LaneCountBackward = 1
+		local openEnd = RoadMath.getEndpoint(straight, "Red")
+		local curve = makeSegment("Curve", Vector3.new(128, 0, 128), CFrame.identity)
+		-- What the session's matchLanesAcrossJoint does
+		local mateOut, mateIn = RoadMath.getLaneCounts(openEnd)
+		local outName, inName = RoadMath.laneAttributeNames("Curve", "Red");
+		(curve.Model :: any).attrs[outName] = mateIn;
+		(curve.Model :: any).attrs[inName] = mateOut
+		local farOut, farIn = RoadMath.getLaneCounts(RoadMath.getEndpoint(curve, "Blue"))
+		t.expect(farOut).toBe(2)
+		t.expect(farIn).toBe(1)
+	end)
 end

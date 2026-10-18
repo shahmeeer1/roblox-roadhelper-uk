@@ -10,7 +10,9 @@
 
 local RoadDefaults = {
 	LaneWidth = 24,
-	LaneCount = 2,
+	-- Lanes per travel direction (see RoadMath's Lanes section)
+	LaneCountForward = 1,
+	LaneCountBackward = 1,
 	SidewalkWidth = 8,
 	MaxAngle = 10,
 	IntersectionAngle = 90,
@@ -23,6 +25,7 @@ local RoadDefaults = {
 }
 
 -- Total road width with the default lane layout
-RoadDefaults.Width = RoadDefaults.LaneCount * RoadDefaults.LaneWidth + 2 * RoadDefaults.SidewalkWidth
+RoadDefaults.Width = (RoadDefaults.LaneCountForward + RoadDefaults.LaneCountBackward) * RoadDefaults.LaneWidth
+	+ 2 * RoadDefaults.SidewalkWidth
 
 return RoadDefaults

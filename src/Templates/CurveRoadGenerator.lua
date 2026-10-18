@@ -15,7 +15,10 @@ type GeneratorModuleDefinition<Attributes> = {
 
 local defaultAttributes = {
 	LaneWidth = 24,
-	LaneCount = 2,
+	-- Lanes per travel direction: forward runs blue -> red, backward red -> blue.
+	-- Either may be zero for a one-way road.
+	LaneCountForward = 1,
+	LaneCountBackward = 1,
 	SidewalkWidth = 8,
 	MaxAngle = 10,
 	AdjustBlueGrade = 0,
@@ -32,8 +35,8 @@ local defaultAttributes = {
 	AdjustShowSnappingHelper = false,
 	TextureLaneMarkings = false,
 	HaveLaneMarkings = true,
-	-- "Left" (UK) or "Right". Not used by this generator yet; carried so it
-	-- propagates along the network to the generators that use it.
+	-- "Left" (UK) or "Right": which side traffic keeps to, placing the
+	-- forward and backward lanes
 	DriveSide = "Left",
 	RoadMaterial = Enum.Material.Concrete,
 	CenterlineColor = Color3.fromRGB(244, 205, 47),
@@ -100,12 +103,18 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 		local size = parameters.Size
 		local bottom = -size.Y / 2
 
-		-- Lane layout drives the geometry: the lane count sets everything, and Width is the
-		-- lanes plus the two sidewalks. An odd lane count means a shared center lane.
+		-- Lane layout drives the geometry: the lane counts set everything, and Width is the
+		-- lanes plus the two sidewalks. Forward lanes carry traffic blue -> red, backward
+		-- lanes red -> blue; either may be zero (one-way), with at least one lane in all.
 		-- Lane markings are painted within the roadway, so they don't widen it.
 		local laneWidth = attributes.LaneWidth
-		local numLanes = attributes.LaneCount
-		local isCenterLaneDrawn = numLanes % 2 ~= 0
+		local forwardLanes = math.max(math.floor(attributes.LaneCountForward or 1), 0)
+		local backwardLanes = math.max(math.floor(attributes.LaneCountBackward or 1), 0)
+		if forwardLanes + backwardLanes < 1 then
+			forwardLanes = 1
+		end
+		local numLanes = forwardLanes + backwardLanes
+		local driveOnLeft = attributes.DriveSide ~= "Right"
 
 		local sidewalkWidth = attributes.SidewalkWidth or 8
 		local width = numLanes * laneWidth + (sidewalkWidth * 2)
@@ -354,59 +363,23 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 			Draw the actual road
 		--]]
 		-- Build a sorted list of every lane marking: its lateral position and color.
-		-- Edge markings are always present; the rest depend on lane count parity.
+		-- Edge markings are always present. The other lane boundaries sit every laneWidth
+		-- across the roadway: the one between the two travel directions gets the double
+		-- centre line, the rest dotted dividers. +lat is left of blue -> red travel, so
+		-- driving on the left puts the forward lanes on the +lat side.
 		local laneMarkings = {
 			{ lat = -edgeLine, color = laneMarkingColor },
 			{ lat = edgeLine, color = laneMarkingColor },
 		}
 
-		if not isCenterLaneDrawn then
-			-- Even lane count: a lane boundary sits on the centreline, so opposing traffic is
-			-- split by the double-yellow center lines; interior boundaries get dotted dividers.
-			local half = numLanes / 2
-
-			for i = 1, half - 1 do
-				table.insert(laneMarkings, {
-					lat = -i * laneWidth,
-					color = laneMarkingColor,
-					isDotted = true,
-				})
-				table.insert(laneMarkings, {
-					lat = i * laneWidth,
-					color = laneMarkingColor,
-					isDotted = true,
-				})
-			end
-			table.insert(laneMarkings, { lat = -CENTER_OFFSET, color = centerlineColor })
-			table.insert(laneMarkings, { lat = CENTER_OFFSET, color = centerlineColor })
-		else
-			-- Odd lane count: a shared center lane straddles lat = 0, bounded by yellow lines
-			local markingsOnEachSide = (numLanes - 1) / 2
-			local halfLaneWidth = laneWidth / 2
-
-			for _, sign in { -1, 1 } do
-				for i = 1, markingsOnEachSide do
-					local lat = (halfLaneWidth + (i - 1) * laneWidth) * sign
-					if i == 1 then
-						table.insert(laneMarkings, {
-							lat = lat - (1 * sign),
-							color = centerlineColor,
-							isDotted = true,
-							dotOffset = 4,
-							skipAsphaltBoundary = true,
-						})
-						table.insert(laneMarkings, {
-							lat = lat,
-							color = centerlineColor,
-						})
-					else
-						table.insert(laneMarkings, {
-							lat = lat,
-							color = laneMarkingColor,
-							isDotted = true,
-						})
-					end
-				end
+		local centerBoundary = if driveOnLeft then backwardLanes else forwardLanes
+		for k = 1, numLanes - 1 do
+			local lat = -numLanes * laneWidth / 2 + k * laneWidth
+			if k == centerBoundary then
+				table.insert(laneMarkings, { lat = lat - CENTER_OFFSET, color = centerlineColor })
+				table.insert(laneMarkings, { lat = lat + CENTER_OFFSET, color = centerlineColor })
+			else
+				table.insert(laneMarkings, { lat = lat, color = laneMarkingColor, isDotted = true })
 			end
 		end
 

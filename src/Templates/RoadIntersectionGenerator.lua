@@ -15,9 +15,13 @@ type GeneratorModuleDefinition<Attributes> = {
 
 local defaultAttributes = {
 	LaneWidthX = 24,
-	LaneCountX = 2,
+	-- Lanes per travel direction on each road: "forward" runs toward the
+	-- road's Plus exit (+Z for road Z, the angled +X direction for road X)
+	LaneCountForwardX = 1,
+	LaneCountBackwardX = 1,
 	LaneWidthZ = 24,
-	LaneCountZ = 2,
+	LaneCountForwardZ = 1,
+	LaneCountBackwardZ = 1,
 	SidewalkWidth = 8,
 	IntersectionAngle = 90,
 	MaxAngle = 10,
@@ -104,8 +108,19 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 		local bottom = -size.Y / 2
 
 		local sw = attributes.SidewalkWidth or 8
-		local wX = attributes.LaneCountX * attributes.LaneWidthX + 2 * sw
-		local wZ = attributes.LaneCountZ * attributes.LaneWidthZ + 2 * sw
+		-- Whole lanes, either direction may be zero (one-way), at least one in all
+		local function laneCounts(forward, backward)
+			local f = math.max(math.floor(forward or 1), 0)
+			local b = math.max(math.floor(backward or 1), 0)
+			if f + b < 1 then
+				f = 1
+			end
+			return f, b
+		end
+		local forwardX, backwardX = laneCounts(attributes.LaneCountForwardX, attributes.LaneCountBackwardX)
+		local forwardZ, backwardZ = laneCounts(attributes.LaneCountForwardZ, attributes.LaneCountBackwardZ)
+		local wX = (forwardX + backwardX) * attributes.LaneWidthX + 2 * sw
+		local wZ = (forwardZ + backwardZ) * attributes.LaneWidthZ + 2 * sw
 		local halfX = size.X / 2
 		local halfZ = size.Z / 2
 
@@ -447,35 +462,31 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 			end
 
 			-- The lane marking lats/colors for one road (drawn solid; lane
-			-- lines are conventionally solid approaching an intersection)
-			local function buildMarkings(laneWidth, numLanes, w)
+			-- lines are conventionally solid approaching an intersection),
+			-- plus the lat of the centre line between the two travel
+			-- directions (nil for a one-way road). Lane boundaries sit every
+			-- laneWidth across the roadway; +lat is left of forward travel,
+			-- so driving on the left puts the forward lanes on the +lat side.
+			local function buildMarkings(laneWidth, forward, backward, w)
 				local edgeLine = w / 2 - sw - EDGE_INSET
 				local markings = {
 					{ lat = -edgeLine, color = laneMarkingColor, isEdge = true },
 					{ lat = edgeLine, color = laneMarkingColor, isEdge = true },
 				}
-				if numLanes % 2 == 0 then
-					for i = 1, numLanes / 2 - 1 do
-						table.insert(markings, { lat = -i * laneWidth, color = laneMarkingColor })
-						table.insert(markings, { lat = i * laneWidth, color = laneMarkingColor })
-					end
-					table.insert(markings, { lat = -CENTER_OFFSET, color = centerlineColor })
-					table.insert(markings, { lat = CENTER_OFFSET, color = centerlineColor })
-				else
-					local halfLaneWidth = laneWidth / 2
-					for _, sign in { -1, 1 } do
-						for i = 1, (numLanes - 1) / 2 do
-							local lat = (halfLaneWidth + (i - 1) * laneWidth) * sign
-							if i == 1 then
-								table.insert(markings, { lat = lat - sign, color = centerlineColor })
-								table.insert(markings, { lat = lat, color = centerlineColor })
-							else
-								table.insert(markings, { lat = lat, color = laneMarkingColor })
-							end
-						end
+				local numLanes = forward + backward
+				local centerBoundary = if driveSideSign < 0 then backward else forward
+				local centerLat = nil
+				for k = 1, numLanes - 1 do
+					local lat = -numLanes * laneWidth / 2 + k * laneWidth
+					if k == centerBoundary then
+						centerLat = lat
+						table.insert(markings, { lat = lat - CENTER_OFFSET, color = centerlineColor })
+						table.insert(markings, { lat = lat + CENTER_OFFSET, color = centerlineColor })
+					else
+						table.insert(markings, { lat = lat, color = laneMarkingColor })
 					end
 				end
-				return markings
+				return markings, centerLat
 			end
 
 			-- The outermost lane markings follow the corner curves. Each
@@ -499,8 +510,8 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 			-- crossing road, with a perpendicular stop bar across the approach
 			-- lanes. Edge lines instead run to the corner arc tangency and
 			-- continue around the corner (drawn above).
-			local function drawStubMarkings(u, n, w, laneWidth, numLanes, othN, othW, faceDistFn, edgeCutFn, stubs, skipEdgeLatSide)
-				local markings = buildMarkings(laneWidth, numLanes, w)
+			local function drawStubMarkings(u, n, w, laneWidth, forward, backward, othN, othW, faceDistFn, edgeCutFn, stubs, skipEdgeLatSide)
+				local markings, centerLat = buildMarkings(laneWidth, forward, backward, w)
 				local edgeLine = w / 2 - sw - EDGE_INSET
 				for _, s in stubs do
 					local dir = u * s
@@ -535,13 +546,22 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 						end
 					end
 					-- Stop bar square across the approach lanes: those on the
-					-- inbound traffic's driving side
-					local inbound = -dir
-					local rightDir = Vector3.new(-inbound.Z, 0, inbound.X)
-					local latSign = math.sign(rightDir:Dot(n)) * driveSideSign
-					local latA = latSign * (CENTER_OFFSET + 1)
-					local latB = latSign * (edgeLine - 1.5)
-					markingStrip(n * latA + dir * tBar, n * latB + dir * tBar, laneMarkingColor, STOP_LINE_WIDTH)
+					-- inbound traffic's driving side, from the centre line to
+					-- the edge (the whole width on a one-way road into the
+					-- junction; none on a one-way road out of it). Traffic
+					-- comes in along -dir: backward on a Plus stub, forward on
+					-- a Minus stub.
+					local inboundLanes = if s > 0 then backward else forward
+					if inboundLanes > 0 then
+						local inbound = -dir
+						local rightDir = Vector3.new(-inbound.Z, 0, inbound.X)
+						local latSign = math.sign(rightDir:Dot(n)) * driveSideSign
+						local latA = if centerLat
+							then centerLat + latSign * (CENTER_OFFSET + 1)
+							else -latSign * (edgeLine - 1.5)
+						local latB = latSign * (edgeLine - 1.5)
+						markingStrip(n * latA + dir * tBar, n * latB + dir * tBar, laneMarkingColor, STOP_LINE_WIDTH)
+					end
 					if crossingWidth > 0 then
 						-- Zebra crosswalk between the stop bar and the
 						-- junction, spanning the full drivable width
@@ -557,7 +577,7 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 				end
 			end
 
-			drawStubMarkings(uZ, nZ, wZ, attributes.LaneWidthZ, attributes.LaneCountZ, nX, wX, function(lat, s)
+			drawStubMarkings(uZ, nZ, wZ, attributes.LaneWidthZ, forwardZ, backwardZ, nX, wX, function(lat, s)
 				return halfZ
 			end, function(s, latSide)
 				local data = cornerData[latSide .. "," .. -s]
@@ -570,7 +590,7 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 				markingStrip(farEdge + uZ * -halfZ, farEdge + uZ * halfZ, laneMarkingColor, MARK_WIDTH)
 			end
 			-- Squared ends: every road X marking runs to the same end plane
-			drawStubMarkings(uX, nX, wX, attributes.LaneWidthX, attributes.LaneCountX, nZ, wZ, function(lat, s)
+			drawStubMarkings(uX, nX, wX, attributes.LaneWidthX, forwardX, backwardX, nZ, wZ, function(lat, s)
 				return halfX
 			end, function(s, latSide)
 				local data = cornerData[s .. "," .. latSide]

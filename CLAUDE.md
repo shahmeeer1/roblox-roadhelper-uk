@@ -82,8 +82,18 @@ lazy-loads `src/main.lua` on first activation.
   regenerates automatically when Size or attributes change. Move it with `PivotTo()`; the pivot
   is the center of the nominal bounding box that the generator works in. The engine binds a
   model to its generator through `model.Generator`, not by the module's name.
-- Road width is derived: `width = LaneCount*LaneWidth + 2*SidewalkWidth` (per road on an
-  intersection: `LaneCountX/Z`, `LaneWidthX/Z`).
+- Lanes are counted per travel direction: `LaneCountForward` (blue → red) and
+  `LaneCountBackward` (red → blue); either may be 0 (one-way), at least one lane in all. On an
+  intersection each road has its own pair suffixed `X`/`Z`, forward running toward its Plus
+  exit. The panel shows them relative to the selected end as lanes **out**/**in**
+  (`RoadMath.getLaneCounts`/`laneAttributeNames`), and new segments match them across the
+  joint (`matchLanesAcrossJoint`) since joined segments can run opposite ways.
+- Road width is derived: `width = (LaneCountForward + LaneCountBackward)*LaneWidth +
+  2*SidewalkWidth` (per road on an intersection, with `LaneWidthX/Z`). Width depends only on
+  the total, so lane edits that keep the total don't move anything.
+- Lane boundaries sit every `LaneWidth` across the roadway; the boundary between the two
+  directions gets the double centre line. Generator `lat` (lateral offset) is positive to the
+  LEFT of forward travel, so driving on the left puts the forward lanes on the +lat side.
 - StraightRoad endpoints (local): blue `(∓sway, -Y/2, -Z/2)` outward -Z, red `(±sway, +Y/2, +Z/2)`
   outward +Z, where `sway = max((X - width)/2, 0)` and the sign pair mirrors with `Flip`.
 - CurveRoad endpoints (local): blue `(-X/2 + width/2, ·, -Z/2)` outward -Z, red
@@ -97,9 +107,9 @@ lazy-loads `src/main.lua` on first activation.
 - Joints are purely spatial: two ends within `RoadMath.JOINT_TOLERANCE` facing opposite ways.
   Neighbours are found with spatial queries against generated parts, and anything that moves
   an end must explicitly re-seat what's joined to it.
-- `DriveSide` attribute (`"Left"` default, or `"Right"`): which side traffic keeps to. The
-  intersection generator uses it for stop bar placement; the road generators carry it so it
-  propagates along the network. Any new side-dependent marking should read it.
+- `DriveSide` attribute (`"Left"` default, or `"Right"`): which side traffic keeps to. All
+  generators use it to place the forward/backward lanes, and the intersection for stop bars.
+  Any new side-dependent marking should read it.
 
 ## Key Conventions
 

@@ -18,12 +18,15 @@ return function(t: TestTypes.TestContext)
 		-- The Add buttons compute the new segment's width from these
 		for _, preset in Presets.List do
 			local attrs = preset.Attributes
-			for _, name in { "LaneCount", "LaneWidth", "SidewalkWidth" } do
+			for _, name in { "LaneCountForward", "LaneCountBackward", "LaneWidth", "SidewalkWidth" } do
 				if typeof(attrs[name]) ~= "number" then
 					t.fail(`{preset.Key} is missing a numeric {name}`)
 				end
 			end
-			if attrs.LaneCount < 1 or attrs.LaneWidth <= 0 or attrs.SidewalkWidth < 0 then
+			if attrs.LaneCountForward < 0 or attrs.LaneCountBackward < 0
+				or attrs.LaneCountForward + attrs.LaneCountBackward < 1
+				or attrs.LaneWidth <= 0 or attrs.SidewalkWidth < 0
+			then
 				t.fail(`{preset.Key} has an invalid lane layout`)
 			end
 		end

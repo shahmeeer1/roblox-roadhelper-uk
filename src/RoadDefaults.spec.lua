@@ -15,7 +15,8 @@ return function(t: TestTypes.TestContext)
 		} do
 			local attributes = generator.Attributes
 			t.expect(attributes.LaneWidth).toBe(RoadDefaults.LaneWidth)
-			t.expect(attributes.LaneCount).toBe(RoadDefaults.LaneCount)
+			t.expect(attributes.LaneCountForward).toBe(RoadDefaults.LaneCountForward)
+			t.expect(attributes.LaneCountBackward).toBe(RoadDefaults.LaneCountBackward)
 			t.expect(attributes.SidewalkWidth).toBe(RoadDefaults.SidewalkWidth)
 			t.expect(attributes.MaxAngle).toBe(RoadDefaults.MaxAngle)
 		end
@@ -25,7 +26,8 @@ return function(t: TestTypes.TestContext)
 		local attributes = require("./Templates/RoadIntersectionGenerator").Attributes
 		for _, axis in { "X", "Z" } do
 			t.expect(attributes["LaneWidth" .. axis]).toBe(RoadDefaults.LaneWidth)
-			t.expect(attributes["LaneCount" .. axis]).toBe(RoadDefaults.LaneCount)
+			t.expect(attributes["LaneCountForward" .. axis]).toBe(RoadDefaults.LaneCountForward)
+			t.expect(attributes["LaneCountBackward" .. axis]).toBe(RoadDefaults.LaneCountBackward)
 		end
 		t.expect(attributes.SidewalkWidth).toBe(RoadDefaults.SidewalkWidth)
 		t.expect(attributes.MaxAngle).toBe(RoadDefaults.MaxAngle)

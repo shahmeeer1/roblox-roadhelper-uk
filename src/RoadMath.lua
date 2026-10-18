@@ -13,7 +13,8 @@
 	UpVector equal to the model's up.
 
 	Conventions used throughout (matching the generators):
-	- width = LaneCount*LaneWidth + 2*SidewalkWidth
+	- width = (LaneCountForward + LaneCountBackward)*LaneWidth + 2*SidewalkWidth
+	  (see the Lanes section for the per-direction counts)
 	- Straight: blue at local (-fs*sway, -Y/2, -Z/2) facing -Z, red at
 	  (fs*sway, +Y/2, +Z/2) facing +Z, fs = Flip and -1 or 1,
 	  sway = max((X - width)/2, 0). The road always climbs blue -> red.
@@ -87,6 +88,46 @@ local function getNumberAttribute(model: Instance, name: string, default: number
 	return default
 end
 
+--------------------------------------------------------------------------------
+-- Lanes
+--------------------------------------------------------------------------------
+
+--[[
+	Lane counts are stored per travel direction. On a road, "forward" lanes
+	carry traffic blue -> red and "backward" lanes red -> blue
+	(LaneCountForward / LaneCountBackward). On an intersection each road has
+	its own pair suffixed X or Z, with forward running toward that road's
+	Plus exit. Either count may be zero (a one-way road), but there is always
+	at least one lane in all, matching the generators.
+]]
+function RoadMath.sanitizeLaneCounts(forward: number, backward: number): (number, number)
+	local f = math.max(math.floor(forward), 0)
+	local b = math.max(math.floor(backward), 0)
+	if f + b < 1 then
+		f = 1
+	end
+	return f, b
+end
+
+-- The forward/backward lane count attribute names for one road of a
+-- segment: suffix "" for a road segment, "X" or "Z" for an intersection
+function RoadMath.laneCountNames(suffix: string): (string, string)
+	return "LaneCountForward" .. suffix, "LaneCountBackward" .. suffix
+end
+
+local function readLaneCounts(model: Instance, suffix: string): (number, number)
+	local forwardName, backwardName = RoadMath.laneCountNames(suffix)
+	return RoadMath.sanitizeLaneCounts(
+		getNumberAttribute(model, forwardName, RoadDefaults.LaneCountForward),
+		getNumberAttribute(model, backwardName, RoadDefaults.LaneCountBackward)
+	)
+end
+
+local function totalLanes(model: Instance, suffix: string): number
+	local forward, backward = readLaneCounts(model, suffix)
+	return forward + backward
+end
+
 function RoadMath.getSegmentInfo(instance: Instance): SegmentInfo?
 	if instance.ClassName ~= "ProceduralModel" then
 		return nil
@@ -108,9 +149,9 @@ function RoadMath.getSegmentInfo(instance: Instance): SegmentInfo?
 		return {
 			Model = model,
 			Kind = kind,
-			Width = getNumberAttribute(model, "LaneCountZ", RoadDefaults.LaneCount) * getNumberAttribute(model, "LaneWidthZ", RoadDefaults.LaneWidth)
+			Width = totalLanes(model, "Z") * getNumberAttribute(model, "LaneWidthZ", RoadDefaults.LaneWidth)
 				+ 2 * sidewalkWidth,
-			WidthX = getNumberAttribute(model, "LaneCountX", RoadDefaults.LaneCount) * getNumberAttribute(model, "LaneWidthX", RoadDefaults.LaneWidth)
+			WidthX = totalLanes(model, "X") * getNumberAttribute(model, "LaneWidthX", RoadDefaults.LaneWidth)
 				+ 2 * sidewalkWidth,
 			Angle = math.rad(math.clamp(getNumberAttribute(model, "IntersectionAngle", RoadDefaults.IntersectionAngle),
 				RoadDefaults.MinIntersectionAngle, RoadDefaults.MaxIntersectionAngle)),
@@ -121,11 +162,10 @@ function RoadMath.getSegmentInfo(instance: Instance): SegmentInfo?
 		}
 	end
 	local laneWidth = getNumberAttribute(model, "LaneWidth", RoadDefaults.LaneWidth)
-	local laneCount = getNumberAttribute(model, "LaneCount", RoadDefaults.LaneCount)
 	return {
 		Model = model,
 		Kind = kind,
-		Width = laneCount * laneWidth + 2 * sidewalkWidth,
+		Width = totalLanes(model, "") * laneWidth + 2 * sidewalkWidth,
 		Size = (model :: any).Size :: Vector3,
 		Pivot = model:GetPivot(),
 		Flip = model:GetAttribute("Flip") == true,
@@ -248,6 +288,41 @@ function RoadMath.allEndpoints(segment: SegmentInfo): { Endpoint }
 		table.insert(endpoints, RoadMath.getEndpoint(segment, id))
 	end
 	return endpoints
+end
+
+-- Whether forward traffic leaves the segment through this end: a road's red
+-- end, or an intersection's Plus exits
+function RoadMath.isForwardEnd(id: EndpointId): boolean
+	return id == "Red" or id == "ZPlus" or id == "XPlus"
+end
+
+-- Which road of its segment an end belongs to, as a lane attribute suffix
+-- ("" for road segments, "X"/"Z" for an intersection's roads)
+function RoadMath.laneSuffix(kind: SegmentKind, id: EndpointId): string
+	if kind ~= "Intersection" then
+		return ""
+	end
+	return if id == "XPlus" or id == "XMinus" then "X" else "Z"
+end
+
+-- The attributes holding the lanes leaving the segment through an end
+-- ("out") and the lanes entering it there ("in")
+function RoadMath.laneAttributeNames(kind: SegmentKind, id: EndpointId): (string, string)
+	local forwardName, backwardName = RoadMath.laneCountNames(RoadMath.laneSuffix(kind, id))
+	if RoadMath.isForwardEnd(id) then
+		return forwardName, backwardName
+	end
+	return backwardName, forwardName
+end
+
+-- The lanes leaving (out) and entering (in) the segment through an end
+function RoadMath.getLaneCounts(endpoint: Endpoint): (number, number)
+	local suffix = RoadMath.laneSuffix(endpoint.Segment.Kind, endpoint.Id)
+	local forward, backward = readLaneCounts(endpoint.Segment.Model, suffix)
+	if RoadMath.isForwardEnd(endpoint.Id) then
+		return forward, backward
+	end
+	return backward, forward
 end
 
 -- The road width at an endpoint (an intersection's X road can be a

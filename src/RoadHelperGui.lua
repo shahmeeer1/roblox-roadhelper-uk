@@ -315,17 +315,40 @@ local function SizingPanel(props: {
 		Padding = UDim.new(0, 6),
 		LayoutOrder = props.LayoutOrder,
 	}, {
-		LaneCountInput = e(HelpGui.WithHelpIcon, {
+		LanesOutInput = e(HelpGui.WithHelpIcon, {
 			Help = e(HelpGui.BasicTooltip, {
-				HelpRichText = "Number of lanes. An odd count adds a shared center turn lane. The bounds adjust so both endpoints stay in place.",
+				HelpRichText = "Lanes carrying traffic <b>out</b> through the selected end. Zero makes a one-way road. The centre line sits between the two directions, and the bounds adjust so both endpoints stay in place.",
 			}),
 			LayoutOrder = 1,
 			Subject = e(NumberInput, {
-				Label = "Lanes",
-				Value = state.LaneCount,
+				Label = "Lanes Out",
+				Value = state.LanesOut,
 				ValueEntered = function(value: number): number?
-					local count = math.max(math.round(value), 1)
-					props.SetSizing("LaneCount", count)
+					local count = math.max(math.round(value), 0)
+					if count + state.LanesIn < 1 then
+						-- A road needs at least one lane: revert
+						return state.LanesOut
+					end
+					props.SetSizing("LanesOut", count)
+					return count
+				end,
+			}),
+		}),
+		LanesInInput = e(HelpGui.WithHelpIcon, {
+			Help = e(HelpGui.BasicTooltip, {
+				HelpRichText = "Lanes carrying traffic <b>in</b> through the selected end. Zero makes a one-way road. The centre line sits between the two directions, and the bounds adjust so both endpoints stay in place.",
+			}),
+			LayoutOrder = 2,
+			Subject = e(NumberInput, {
+				Label = "Lanes In",
+				Value = state.LanesIn,
+				ValueEntered = function(value: number): number?
+					local count = math.max(math.round(value), 0)
+					if count + state.LanesOut < 1 then
+						-- A road needs at least one lane: revert
+						return state.LanesIn
+					end
+					props.SetSizing("LanesIn", count)
 					return count
 				end,
 			}),
@@ -334,7 +357,7 @@ local function SizingPanel(props: {
 			Help = e(HelpGui.BasicTooltip, {
 				HelpRichText = "Width of each lane in studs. The bounds adjust so both endpoints stay in place.",
 			}),
-			LayoutOrder = 2,
+			LayoutOrder = 3,
 			Subject = e(NumberInput, {
 				Label = "Lane Width",
 				Value = state.LaneWidth,
@@ -351,7 +374,7 @@ local function SizingPanel(props: {
 			Help = e(HelpGui.BasicTooltip, {
 				HelpRichText = "Width of the raised sidewalk on each side, in studs. Zero removes the sidewalks entirely.",
 			}),
-			LayoutOrder = 3,
+			LayoutOrder = 4,
 			Subject = e(NumberInput, {
 				Label = "Sidewalk Width",
 				Value = state.SidewalkWidth,
@@ -367,7 +390,7 @@ local function SizingPanel(props: {
 				Help = e(HelpGui.BasicTooltip, {
 					HelpRichText = "Width of the zebra crosswalks in front of the stop lines. Zero removes them. The bounding box grows to make room, so the turning space is kept.",
 				}),
-				LayoutOrder = 5,
+				LayoutOrder = 6,
 				Subject = e(NumberInput, {
 					Label = "Crosswalk Width",
 					Value = (state :: any).CrossingWidth,
@@ -384,7 +407,7 @@ local function SizingPanel(props: {
 				Help = e(HelpGui.BasicTooltip, {
 					HelpRichText = "The corner curve radius, controlled through the bounding box size beyond what the roads' widths require. Exact for 90 degree intersections; skewed corners vary around it.",
 				}),
-				LayoutOrder = 4,
+				LayoutOrder = 5,
 				Subject = e(NumberInput, {
 					Label = "Corner Radius",
 					Value = (state :: any).CornerRadius,
