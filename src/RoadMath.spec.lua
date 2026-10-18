@@ -454,6 +454,29 @@ return function(t: TestTypes.TestContext)
 		t.expect((joint :: any).Id).toBe("ZPlus")
 	end)
 
+	t.test("intersection exits: stray Adjust attributes don't rotate them", function()
+		local fake: any = { attrs = { AdjustRedDir = 25, AdjustBlueDir = -40 } }
+		fake.GetAttribute = function(self, name)
+			return self.attrs[name]
+		end
+		local seg: RoadMath.SegmentInfo = {
+			Model = fake,
+			Kind = "Intersection",
+			Width = 64,
+			WidthX = 64,
+			Angle = math.rad(90),
+			ThroughRoad = true,
+			Size = Vector3.new(250, 0, 250),
+			Pivot = CFrame.identity,
+			Flip = false,
+		}
+		for _, id in RoadMath.endpointIds(seg) do
+			local exit = RoadMath.getEndpoint(seg, id)
+			expectFuzzy(t, RoadMath.actualOutwardDirection(exit), exit.WorldCFrame.LookVector)
+			expectFuzzy(t, RoadMath.actualEndpointFrame(exit).LookVector, exit.WorldCFrame.LookVector)
+		end
+	end)
+
 	t.test("intersection exits: box-aligned placement with matching Dir", function()
 		local fake: any = { attrs = {} }
 		fake.GetAttribute = function(self, name)

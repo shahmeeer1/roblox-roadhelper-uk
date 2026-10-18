@@ -256,13 +256,23 @@ function RoadMath.endpointWidth(endpoint: Endpoint): number
 	return endpoint.Segment.Width
 end
 
+-- The effective world yaw (radians) of an end's Dir adjust. Intersection
+-- exits have no adjust angles: any stray Adjust attribute on an
+-- intersection model must not rotate its exits.
+local function effectiveDirAngle(endpoint: Endpoint): number
+	if endpoint.Segment.Kind == "Intersection" then
+		return 0
+	end
+	local dirName = if endpoint.Id == "Blue" then "AdjustBlueDir" else "AdjustRedDir"
+	local dirAngle = math.rad(getNumberAttribute(endpoint.Segment.Model, dirName, 0))
+	return dirAngle * RoadMath.flipFactor(endpoint.Segment, "Dir")
+end
+
 -- The endpoint frame rotated to the end's *actual* face: the effective Dir
 -- yaw applied about the frame's up axis, position unchanged. Used to align
 -- handles and hover UX with the face rather than the bounding box.
 function RoadMath.actualEndpointFrame(endpoint: Endpoint): CFrame
-	local dirName = if endpoint.Id == "Blue" then "AdjustBlueDir" else "AdjustRedDir"
-	local dirAngle = math.rad(getNumberAttribute(endpoint.Segment.Model, dirName, 0))
-	dirAngle *= RoadMath.flipFactor(endpoint.Segment, "Dir")
+	local dirAngle = effectiveDirAngle(endpoint)
 	local frame = endpoint.WorldCFrame
 	if dirAngle == 0 then
 		return frame
@@ -274,9 +284,7 @@ end
 -- world space, horizontal component only. Used for placing new segments off an
 -- open end so they align with the face rather than the nominal frame.
 function RoadMath.actualOutwardDirection(endpoint: Endpoint): Vector3
-	local dirName = if endpoint.Id == "Blue" then "AdjustBlueDir" else "AdjustRedDir"
-	local dirAngle = math.rad(getNumberAttribute(endpoint.Segment.Model, dirName, 0))
-	dirAngle *= RoadMath.flipFactor(endpoint.Segment, "Dir")
+	local dirAngle = effectiveDirAngle(endpoint)
 	local nominalOutward = endpoint.WorldCFrame.LookVector
 	local up = endpoint.WorldCFrame.UpVector
 	return CFrame.fromAxisAngle(up, dirAngle):VectorToWorldSpace(nominalOutward)

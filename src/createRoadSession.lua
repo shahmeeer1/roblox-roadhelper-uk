@@ -749,7 +749,12 @@ local function createRoadSession(plugin: Plugin)
 		end
 		local ix = moveIntersection
 		if ix then
-			ix.Model:PivotTo(ix.StartPivot + (newWorldPosition - ix.ExitStart))
+			-- Follow where the dragged end actually landed rather than the
+			-- requested position: solveMove clamps (minimum length/footprint),
+			-- and following the raw request would pull the joint apart
+			local landed = resolveEndpoint(moveTargets[1])
+			local exitTarget = if landed then landed.WorldCFrame.Position else newWorldPosition
+			ix.Model:PivotTo(ix.StartPivot + (exitTarget - ix.ExitStart))
 			reseatConnectedEnds(ix.Model, ix.Connected)
 		end
 		local dragged = moveTargets[1]
@@ -1070,6 +1075,16 @@ local function createRoadSession(plugin: Plugin)
 				end)
 				if not ok then
 					warn("RoadHelper: Intersection placement failed: " .. tostring(err))
+				end
+				-- solveMove clamps, so the road end may have stopped short of
+				-- the exit: pull the intersection back onto it so the joint
+				-- stays sealed (the yaw is fixed, so a translation is exact)
+				local landed = resolveEndpoint(ix.SourceRef)
+				if landed then
+					local gap = landed.WorldCFrame.Position - exit.WorldCFrame.Position
+					if gap.Magnitude > 1e-3 then
+						ix.Model:PivotTo(ix.Model:GetPivot() + gap)
+					end
 				end
 			end
 			changeSignal:Fire()
@@ -1838,7 +1853,8 @@ local function createRoadSession(plugin: Plugin)
 	-- the equivalent delta to the mated partner end to keep the joint sealed.
 	function session.SetAdjustValue(axis: RoadMath.AdjustAxis, value: number)
 		local selected = getSelectedEndpoint()
-		if not selected then
+		-- Intersections have no adjust angles
+		if not selected or selected.Segment.Kind == "Intersection" then
 			return
 		end
 		local delta = value - RoadMath.getAdjustValue(selected, axis)
@@ -1850,7 +1866,9 @@ local function createRoadSession(plugin: Plugin)
 		end
 		applyTo(selected)
 		local partner = getPartnerEndpoint()
-		if partner then
+		-- As with the rotate rings: an intersection partner has no adjust
+		-- angles to keep in sync (the road end just stops being flush)
+		if partner and partner.Segment.Kind ~= "Intersection" then
 			applyTo(partner)
 		end
 		finishRecording()
