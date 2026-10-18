@@ -16,6 +16,7 @@ local PluginGuiTypes = require("./PluginGui/Types")
 
 local createRoadSession = require("./createRoadSession")
 local Presets = require("./Presets")
+local RoadDefaults = require("./RoadDefaults")
 local RoadMath = require("./RoadMath")
 local Settings = require("./Settings")
 
@@ -106,7 +107,7 @@ local function ParametersPanel(props: {
 					Value = (state :: any).IntersectionAngle,
 					Unit = "°",
 					ValueEntered = function(value: number): number?
-						local clamped = math.clamp(value, 25, 155)
+						local clamped = math.clamp(value, RoadDefaults.MinIntersectionAngle, RoadDefaults.MaxIntersectionAngle)
 						props.SetSegmentAttribute("IntersectionAngle", clamped)
 						return clamped
 					end,

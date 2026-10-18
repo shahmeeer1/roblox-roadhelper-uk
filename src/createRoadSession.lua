@@ -30,6 +30,7 @@ local DraggerContext_PluginImpl = (require :: any)(DraggerFramework.Implementati
 local DraggerToolComponent = (require :: any)(DraggerFramework.DraggerTools.DraggerToolComponent)
 
 local RoadMath = require("./RoadMath")
+local RoadDefaults = require("./RoadDefaults")
 local EndpointPickHandles = require("./Handles/EndpointPickHandles")
 local DeleteExitHandles = require("./Handles/DeleteExitHandles")
 local PartialRotateHandleView = require("./Dragger/PartialRotateHandleView")
@@ -902,8 +903,8 @@ local function createRoadSession(plugin: Plugin)
 			-- Translate the extended end's lane layout onto the road's
 			-- lane attributes
 			local axis = if openEnd.Id == "XPlus" or openEnd.Id == "XMinus" then "X" else "Z"
-			newModel:SetAttribute("LaneCount", sourceModel:GetAttribute("LaneCount" .. axis) or 2)
-			newModel:SetAttribute("LaneWidth", sourceModel:GetAttribute("LaneWidth" .. axis) or 24)
+			newModel:SetAttribute("LaneCount", sourceModel:GetAttribute("LaneCount" .. axis) or RoadDefaults.LaneCount)
+			newModel:SetAttribute("LaneWidth", sourceModel:GetAttribute("LaneWidth" .. axis) or RoadDefaults.LaneWidth)
 		end
 		newModel:SetAttribute("Flip", false)
 		for _, axis in ADJUST_AXES do
@@ -978,22 +979,22 @@ local function createRoadSession(plugin: Plugin)
 		end
 		local laneCount = sourceModel:GetAttribute("LaneCount")
 		local laneWidth = sourceModel:GetAttribute("LaneWidth")
-		newModel:SetAttribute("LaneCountZ", laneCount or 2)
-		newModel:SetAttribute("LaneWidthZ", laneWidth or 24)
-		newModel:SetAttribute("LaneCountX", laneCount or 2)
-		newModel:SetAttribute("LaneWidthX", laneWidth or 24)
-		newModel:SetAttribute("IntersectionAngle", 90)
+		newModel:SetAttribute("LaneCountZ", laneCount or RoadDefaults.LaneCount)
+		newModel:SetAttribute("LaneWidthZ", laneWidth or RoadDefaults.LaneWidth)
+		newModel:SetAttribute("LaneCountX", laneCount or RoadDefaults.LaneCount)
+		newModel:SetAttribute("LaneWidthX", laneWidth or RoadDefaults.LaneWidth)
+		newModel:SetAttribute("IntersectionAngle", RoadDefaults.IntersectionAngle)
 		newModel:SetAttribute("ThroughRoad", true)
 
-		-- Sized from the lane layout: the road width plus a default 16 stud
-		-- corner radius of extra space. Path-like roads (a single lane with
-		-- no sidewalks, e.g. dirt/cobblestone/pebble paths) get tighter
-		-- corners: half a lane's radius.
+		-- Sized from the lane layout: the road width plus the default
+		-- corner radius' worth of extra space on each side. Path-like roads
+		-- (a single lane with no sidewalks, e.g. dirt/cobblestone/pebble
+		-- paths) get tighter corners: half a lane's radius.
 		local width = RoadMath.endpointWidth(openEnd)
-		local laneWidthNumber = if typeof(laneWidth) == "number" then laneWidth else 24
+		local laneWidthNumber = if typeof(laneWidth) == "number" then laneWidth else RoadDefaults.LaneWidth
 		local sidewalk = sourceModel:GetAttribute("SidewalkWidth")
 		local isPath = laneCount == 1 and sidewalk == 0
-		local boxSize = width + (if isPath then laneWidthNumber else 32)
+		local boxSize = width + (if isPath then laneWidthNumber else 2 * RoadDefaults.CornerRadius)
 		local size = Vector3.new(boxSize, 0, boxSize);
 		(newModel :: any).Size = size
 		-- ZMinus (local -Z) exit opposes the road end's actual face
@@ -1155,7 +1156,7 @@ local function createRoadSession(plugin: Plugin)
 		intersectionDrag = {
 			Model = selected.Segment.Model,
 			StartPivot = selected.Segment.Model:GetPivot(),
-			StartAngle = if typeof(startAngle) == "number" then startAngle else 90,
+			StartAngle = if typeof(startAngle) == "number" then startAngle else RoadDefaults.IntersectionAngle,
 			Connected = connected,
 		}
 		gestureActive = true
@@ -1205,7 +1206,7 @@ local function createRoadSession(plugin: Plugin)
 		local pivot = model:GetPivot()
 		local size = (model :: any).Size :: Vector3
 		local angleValue = model:GetAttribute("IntersectionAngle")
-		local angleDeg = if typeof(angleValue) == "number" then angleValue else 90
+		local angleDeg = if typeof(angleValue) == "number" then angleValue else RoadDefaults.IntersectionAngle
 		local yaw = 0
 		if exit.Id == "XPlus" then
 			yaw = 180
@@ -1222,10 +1223,10 @@ local function createRoadSession(plugin: Plugin)
 			local countZ = model:GetAttribute("LaneCountZ")
 			local widthX = model:GetAttribute("LaneWidthX")
 			local widthZ = model:GetAttribute("LaneWidthZ")
-			model:SetAttribute("LaneCountX", countZ or 2)
-			model:SetAttribute("LaneCountZ", countX or 2)
-			model:SetAttribute("LaneWidthX", widthZ or 24)
-			model:SetAttribute("LaneWidthZ", widthX or 24)
+			model:SetAttribute("LaneCountX", countZ or RoadDefaults.LaneCount)
+			model:SetAttribute("LaneCountZ", countX or RoadDefaults.LaneCount)
+			model:SetAttribute("LaneWidthX", widthZ or RoadDefaults.LaneWidth)
+			model:SetAttribute("LaneWidthZ", widthX or RoadDefaults.LaneWidth)
 			model:SetAttribute("IntersectionAngle", 180 - angleDeg);
 			(model :: any).Size = Vector3.new(size.Z, size.Y, size.X)
 		end
@@ -1329,7 +1330,7 @@ local function createRoadSession(plugin: Plugin)
 			then presetAttributes.LaneCount * presetAttributes.LaneWidth + 2 * presetAttributes.SidewalkWidth
 			elseif template then template.Width
 			elseif selected then RoadMath.endpointWidth(selected)
-			else 64
+			else RoadDefaults.Width
 
 		local look = camera.CFrame.LookVector * Vector3.new(1, 0, 1)
 		look = if look.Magnitude > 0.01 then look.Unit else Vector3.zAxis
@@ -1373,8 +1374,8 @@ local function createRoadSession(plugin: Plugin)
 			end
 			if selected.Segment.Kind == "Intersection" then
 				local axis = if selected.Id == "XPlus" or selected.Id == "XMinus" then "X" else "Z"
-				newModel:SetAttribute("LaneCount", selected.Segment.Model:GetAttribute("LaneCount" .. axis) or 2)
-				newModel:SetAttribute("LaneWidth", selected.Segment.Model:GetAttribute("LaneWidth" .. axis) or 24)
+				newModel:SetAttribute("LaneCount", selected.Segment.Model:GetAttribute("LaneCount" .. axis) or RoadDefaults.LaneCount)
+				newModel:SetAttribute("LaneWidth", selected.Segment.Model:GetAttribute("LaneWidth" .. axis) or RoadDefaults.LaneWidth)
 			end
 			width = RoadMath.endpointWidth(selected)
 		end
@@ -1550,7 +1551,7 @@ local function createRoadSession(plugin: Plugin)
 				if not state then
 					return
 				end
-				local newAngle = math.clamp(math.round((state.StartAngle + deltaDegrees) * 10) / 10, 25, 155)
+				local newAngle = math.clamp(math.round((state.StartAngle + deltaDegrees) * 10) / 10, RoadDefaults.MinIntersectionAngle, RoadDefaults.MaxIntersectionAngle)
 				if state.Model:GetAttribute("IntersectionAngle") ~= newAngle then
 					state.Model:SetAttribute("IntersectionAngle", newAngle)
 					reseatConnectedEnds(state.Model, state.Connected)
@@ -1710,12 +1711,12 @@ local function createRoadSession(plugin: Plugin)
 			Blend = selected.Segment.Model:GetAttribute("Blend") == true,
 			HaveLaneMarkings = selected.Segment.Model:GetAttribute("HaveLaneMarkings") ~= false,
 			TextureLaneMarkings = selected.Segment.Model:GetAttribute("TextureLaneMarkings") == true,
-			MaxAngle = (selected.Segment.Model:GetAttribute("MaxAngle") :: number?) or 10,
+			MaxAngle = (selected.Segment.Model:GetAttribute("MaxAngle") :: number?) or RoadDefaults.MaxAngle,
 			-- For intersections, the lane layout of the selected end's road
-			LaneCount = (selected.Segment.Model:GetAttribute("LaneCount" .. laneAxisSuffix) :: number?) or 2,
-			LaneWidth = (selected.Segment.Model:GetAttribute("LaneWidth" .. laneAxisSuffix) :: number?) or 24,
-			SidewalkWidth = (selected.Segment.Model:GetAttribute("SidewalkWidth") :: number?) or 8,
-			IntersectionAngle = (selected.Segment.Model:GetAttribute("IntersectionAngle") :: number?) or 90,
+			LaneCount = (selected.Segment.Model:GetAttribute("LaneCount" .. laneAxisSuffix) :: number?) or RoadDefaults.LaneCount,
+			LaneWidth = (selected.Segment.Model:GetAttribute("LaneWidth" .. laneAxisSuffix) :: number?) or RoadDefaults.LaneWidth,
+			SidewalkWidth = (selected.Segment.Model:GetAttribute("SidewalkWidth") :: number?) or RoadDefaults.SidewalkWidth,
+			IntersectionAngle = (selected.Segment.Model:GetAttribute("IntersectionAngle") :: number?) or RoadDefaults.IntersectionAngle,
 			CornerRadius = math.round((selected.Segment.Size.X - selected.Segment.Width
 				- 2 * ((selected.Segment.Model:GetAttribute("CrossingWidth") :: number?) or 0)) * 50) / 100,
 			CrossingWidth = (selected.Segment.Model:GetAttribute("CrossingWidth") :: number?) or 0,
@@ -1777,11 +1778,11 @@ local function createRoadSession(plugin: Plugin)
 			-- which moves the exits; the joined roads follow to make space.
 			local axis = if selected.Id == "XPlus" or selected.Id == "XMinus" then "X" else "Z"
 			local function roadWidths(): (number, number)
-				local sw = (model:GetAttribute("SidewalkWidth") :: number?) or 8
-				local wZ = ((model:GetAttribute("LaneCountZ") :: number?) or 2)
-					* ((model:GetAttribute("LaneWidthZ") :: number?) or 24) + 2 * sw
-				local wX = ((model:GetAttribute("LaneCountX") :: number?) or 2)
-					* ((model:GetAttribute("LaneWidthX") :: number?) or 24) + 2 * sw
+				local sw = (model:GetAttribute("SidewalkWidth") :: number?) or RoadDefaults.SidewalkWidth
+				local wZ = ((model:GetAttribute("LaneCountZ") :: number?) or RoadDefaults.LaneCount)
+					* ((model:GetAttribute("LaneWidthZ") :: number?) or RoadDefaults.LaneWidth) + 2 * sw
+				local wX = ((model:GetAttribute("LaneCountX") :: number?) or RoadDefaults.LaneCount)
+					* ((model:GetAttribute("LaneWidthX") :: number?) or RoadDefaults.LaneWidth) + 2 * sw
 				return wZ, wX
 			end
 			local connections = collectIntersectionConnections(selected.Segment)
@@ -1821,9 +1822,9 @@ local function createRoadSession(plugin: Plugin)
 			return
 		end
 		local layout: { [string]: number } = {
-			LaneCount = (model:GetAttribute("LaneCount") :: number?) or 2,
-			LaneWidth = (model:GetAttribute("LaneWidth") :: number?) or 24,
-			SidewalkWidth = (model:GetAttribute("SidewalkWidth") :: number?) or 8,
+			LaneCount = (model:GetAttribute("LaneCount") :: number?) or RoadDefaults.LaneCount,
+			LaneWidth = (model:GetAttribute("LaneWidth") :: number?) or RoadDefaults.LaneWidth,
+			SidewalkWidth = (model:GetAttribute("SidewalkWidth") :: number?) or RoadDefaults.SidewalkWidth,
 		}
 		layout[name] = value
 		local newWidth = layout.LaneCount * layout.LaneWidth + 2 * layout.SidewalkWidth
@@ -1921,23 +1922,23 @@ local function createRoadSession(plugin: Plugin)
 				end
 			end
 			for _, axis in { "X", "Z" } do
-				newModel:SetAttribute("LaneCount" .. axis, presetAttributes.LaneCount or 2)
-				newModel:SetAttribute("LaneWidth" .. axis, presetAttributes.LaneWidth or 24)
+				newModel:SetAttribute("LaneCount" .. axis, presetAttributes.LaneCount or RoadDefaults.LaneCount)
+				newModel:SetAttribute("LaneWidth" .. axis, presetAttributes.LaneWidth or RoadDefaults.LaneWidth)
 			end
 		end
 		newModel:SetAttribute("ThroughRoad", throughRoad)
-		newModel:SetAttribute("IntersectionAngle", 90)
+		newModel:SetAttribute("IntersectionAngle", RoadDefaults.IntersectionAngle)
 
 		-- Default size from the lane layout, like extending with one
-		local sidewalk = (newModel:GetAttribute("SidewalkWidth") :: number?) or 8
-		local wZ = ((newModel:GetAttribute("LaneCountZ") :: number?) or 2)
-			* ((newModel:GetAttribute("LaneWidthZ") :: number?) or 24) + 2 * sidewalk
-		local wX = ((newModel:GetAttribute("LaneCountX") :: number?) or 2)
-			* ((newModel:GetAttribute("LaneWidthX") :: number?) or 24) + 2 * sidewalk
-		local laneWidthZ = (newModel:GetAttribute("LaneWidthZ") :: number?) or 24
-		local isPath = ((newModel:GetAttribute("LaneCountZ") :: number?) or 2) == 1 and sidewalk == 0
-		-- Default 16 stud corner radius for roads, half a lane for paths
-		local extra = if isPath then laneWidthZ else 32
+		local sidewalk = (newModel:GetAttribute("SidewalkWidth") :: number?) or RoadDefaults.SidewalkWidth
+		local wZ = ((newModel:GetAttribute("LaneCountZ") :: number?) or RoadDefaults.LaneCount)
+			* ((newModel:GetAttribute("LaneWidthZ") :: number?) or RoadDefaults.LaneWidth) + 2 * sidewalk
+		local wX = ((newModel:GetAttribute("LaneCountX") :: number?) or RoadDefaults.LaneCount)
+			* ((newModel:GetAttribute("LaneWidthX") :: number?) or RoadDefaults.LaneWidth) + 2 * sidewalk
+		local laneWidthZ = (newModel:GetAttribute("LaneWidthZ") :: number?) or RoadDefaults.LaneWidth
+		local isPath = ((newModel:GetAttribute("LaneCountZ") :: number?) or RoadDefaults.LaneCount) == 1 and sidewalk == 0
+		-- Default corner radius for roads, half a lane for paths
+		local extra = if isPath then laneWidthZ else 2 * RoadDefaults.CornerRadius
 
 		local look = camera.CFrame.LookVector * Vector3.new(1, 0, 1)
 		look = if look.Magnitude > 0.01 then look.Unit else Vector3.zAxis

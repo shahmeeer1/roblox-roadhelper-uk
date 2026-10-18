@@ -24,6 +24,8 @@
 	  right-handed rotation about +Y with Roblox's CFrame.Angles.
 ]]
 
+local RoadDefaults = require("./RoadDefaults")
+
 local RoadMath = {}
 
 export type SegmentKind = "Straight" | "Curve" | "Intersection"
@@ -101,24 +103,25 @@ function RoadMath.getSegmentInfo(instance: Instance): SegmentInfo?
 		return nil
 	end
 	local model = instance :: Model
-	local sidewalkWidth = getNumberAttribute(model, "SidewalkWidth", 8)
+	local sidewalkWidth = getNumberAttribute(model, "SidewalkWidth", RoadDefaults.SidewalkWidth)
 	if kind == "Intersection" then
 		return {
 			Model = model,
 			Kind = kind,
-			Width = getNumberAttribute(model, "LaneCountZ", 2) * getNumberAttribute(model, "LaneWidthZ", 24)
+			Width = getNumberAttribute(model, "LaneCountZ", RoadDefaults.LaneCount) * getNumberAttribute(model, "LaneWidthZ", RoadDefaults.LaneWidth)
 				+ 2 * sidewalkWidth,
-			WidthX = getNumberAttribute(model, "LaneCountX", 2) * getNumberAttribute(model, "LaneWidthX", 24)
+			WidthX = getNumberAttribute(model, "LaneCountX", RoadDefaults.LaneCount) * getNumberAttribute(model, "LaneWidthX", RoadDefaults.LaneWidth)
 				+ 2 * sidewalkWidth,
-			Angle = math.rad(math.clamp(getNumberAttribute(model, "IntersectionAngle", 90), 25, 155)),
+			Angle = math.rad(math.clamp(getNumberAttribute(model, "IntersectionAngle", RoadDefaults.IntersectionAngle),
+				RoadDefaults.MinIntersectionAngle, RoadDefaults.MaxIntersectionAngle)),
 			ThroughRoad = model:GetAttribute("ThroughRoad") ~= false,
 			Size = (model :: any).Size :: Vector3,
 			Pivot = model:GetPivot(),
 			Flip = false,
 		}
 	end
-	local laneWidth = getNumberAttribute(model, "LaneWidth", 24)
-	local laneCount = getNumberAttribute(model, "LaneCount", 2)
+	local laneWidth = getNumberAttribute(model, "LaneWidth", RoadDefaults.LaneWidth)
+	local laneCount = getNumberAttribute(model, "LaneCount", RoadDefaults.LaneCount)
 	return {
 		Model = model,
 		Kind = kind,
