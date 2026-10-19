@@ -101,6 +101,8 @@ export type SelectionState = {
 	ArmOwnLength: number?,
 	ArmSkew: number?,
 	ArmFlare: number?,
+	-- The ring's lanes where the selected arm meets it
+	ArmRingLanes: number?,
 	-- The selected arm's entry lanes' arrows, left to right, and whether
 	-- they're automatic
 	ArmArrows: { string }?,
@@ -118,6 +120,8 @@ export type SelectionState = {
 	SectionMoved: boolean?,
 	SectionClear: boolean?,
 	RingTaperLength: number?,
+	-- "Concentric" or "Spiral" lane lines round the ring
+	RingMarkings: string?,
 	SplitterStyle: string?,
 	LaneWidth: number,
 	SidewalkWidth: number,
@@ -1924,6 +1928,8 @@ local function createRoadSession(plugin: Plugin)
 			model:SetAttribute("Arms", RoadMath.serializeArms(specs))
 		elseif action == "FlareLength" then
 			model:SetAttribute("FlareLength", math.max(value, 1))
+		elseif action == "RingMarkings" then
+			model:SetAttribute("RingMarkings", if value == "Spiral" then "Spiral" else "Concentric")
 		elseif action == "SplitterStyle" then
 			model:SetAttribute("SplitterStyle", if value == "Hatched" then "Hatched" else "Kerbed")
 		elseif action == "ArmLength" or action == "SplitterWidth" or action == "EntryKerbRadius" then
@@ -2492,6 +2498,9 @@ local function createRoadSession(plugin: Plugin)
 			ArmOwnLength = if roundabout and roundaboutArm then roundabout.Arms[roundaboutArm].Length else nil,
 			ArmSkew = if roundabout and roundaboutArm then roundabout.Arms[roundaboutArm].Skew else nil,
 			ArmFlare = if roundabout and roundaboutArm then roundabout.Arms[roundaboutArm].Flare else nil,
+			ArmRingLanes = if roundabout and roundaboutArm
+				then math.round(roundabout.Arms[roundaboutArm].RingWidth / roundabout.LaneWidth)
+				else nil,
 			ArmArrows = if roundabout and roundaboutArm
 				then RoadMath.laneArrows(
 					roundabout.Arms[roundaboutArm].Arrows,
@@ -2510,6 +2519,9 @@ local function createRoadSession(plugin: Plugin)
 				else nil,
 			SectionClear = if roundaboutSectionInfo then roundaboutSectionInfo.Clear else nil,
 			RingTaperLength = if roundabout then roundabout.RingTaperLength else nil,
+			RingMarkings = if roundabout
+				then (if selected.Segment.Model:GetAttribute("RingMarkings") == "Spiral" then "Spiral" else "Concentric")
+				else nil,
 			SplitterStyle = if roundabout then roundabout.SplitterStyle else nil,
 			LaneWidth = (selected.Segment.Model:GetAttribute("LaneWidth" .. laneAxisSuffix) :: number?) or RoadDefaults.LaneWidth,
 			SidewalkWidth = (selected.Segment.Model:GetAttribute("SidewalkWidth") :: number?) or RoadDefaults.SidewalkWidth,

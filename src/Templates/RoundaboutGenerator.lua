@@ -29,6 +29,9 @@ local defaultAttributes = {
 	-- way round), changing over RingTaperLength
 	RingSections = "",
 	RingTaperLength = 60,
+	-- How the ring's lane lines run: "Concentric" (round the island) or
+	-- "Spiral" (each sweeping out to the next exit, so a lane leads off it)
+	RingMarkings = "Concentric",
 	-- The arms, "angle,exit,entry[,length,skew,flare,arrows];...": the
 	-- direction from the island's centroid in degrees (atan2(z, x)), lanes
 	-- leaving and lanes entering, and optionally the arm's own length (0 for
@@ -1283,27 +1286,126 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 				end
 				return lines
 			end
+			--[[
+				Spiral markings: the ring is divided into stretches, one per arm
+				with exit lanes, each running from the end of the previous such
+				arm's mouth to the end of its own. Over a stretch the lane lines
+				sweep outward so that, by the arm, the outermost of the ring's
+				lanes line up with its exit lanes: the line between the lanes
+				that carry on and those that leave runs into the exit's nose (the
+				splitter island's tip), lines between leaving lanes meet the
+				exit's own lane lines at the ring's edge, and the rest carry on
+				past the mouth that many lanes further out. New lines start
+				nearer the island after the mouth.
+			--]]
+			local stretches = {}
+			if attributes.RingMarkings == "Spiral" then
+				for _, arm in arms do
+					if arm.Exit > 0 then
+						-- Where the line along the arm at lat meets the ring's
+						-- outer edge, as a position round the ring
+						local function ringAt(lat)
+							local hit = crossing(arm, 0, lat)
+							return if hit then ringPositionOf(measure, hit.Point.X, hit.Point.Z) else nil
+						end
+						local targets = {}
+						for e = 0, arm.Exit - 1 do
+							targets[e] = ringAt(exitSide * (arm.Splitter / 2 + e * laneWidth))
+						end
+						local finish = ringAt(if entrySide > 0 then arm.CutPlus else arm.CutMinus)
+						if targets[0] and finish then
+							table.insert(stretches, {
+								Arm = arm,
+								Targets = targets,
+								Nose = targets[0],
+								Finish = finish,
+								Lanes = math.round(widthAt(targets[0]) / laneWidth),
+							})
+						end
+					end
+				end
+				table.sort(stretches, function(x, y)
+					return x.Nose < y.Nose
+				end)
+				for m, stretch in stretches do
+					stretch.Start = stretches[(m - 2) % #stretches + 1].Finish
+				end
+			end
+			-- The signed distance round the ring from y to x
+			local function along(x, y)
+				return (x - y + total / 2) % total - total / 2
+			end
+			-- Where lane line k is at a station `progress` into a stretch, from
+			-- where it would be concentric (`base`); nil once it's left the
+			-- ring, with how far into the stretch it does
+			local function spiralOffset(stretch, k, base, progress, station)
+				local exits = math.min(stretch.Arm.Exit, stretch.Lanes - 1)
+				local leaving = k + exits - stretch.Lanes
+				local length, target
+				if leaving >= 0 then
+					local finish = stretch.Targets[math.min(leaving, exits - 1)] or stretch.Nose
+					length = math.max((finish - stretch.Start) % total, 1e-3)
+					if progress > length then
+						return nil, length
+					end
+					target = station.W
+				else
+					length = math.max((stretch.Nose - stretch.Start) % total, 1e-3)
+					target = (k + exits) * laneWidth
+					if progress >= length then
+						return target, length
+					end
+				end
+				return base + (target - base) * smoothstep(math.clamp(progress / length, 0, 1)), length
+			end
 			local function ringLaneLines()
 				local travelled, lastEnds = {}, {}
 				for i = 1, count do
 					local a, b = stations[i], stations[i % count + 1]
 					-- Which section this stretch is in, judged at its middle
 					local middle = a.S + ((b.S - a.S) % total) / 2
-					local section, past = sectionAt(sections, total, if exitSide > 0 then middle else (total - middle) % total)
+					local u = if exitSide > 0 then middle else (total - middle) % total
+					local section, past = sectionAt(sections, total, u)
 					local changing = section ~= nil and past < section.Taper
 					local from, to = laneLinesAt(section, changing, a), laneLinesAt(section, changing, b)
+					-- And which spiral stretch, if any, and how far into it
+					-- each end of this piece is
+					local stretch, progress = nil, math.huge
+					for _, candidate in stretches do
+						local into = (u - candidate.Start) % total
+						if into < progress then
+							stretch, progress = candidate, into
+						end
+					end
+					local progressA = if stretch then progress + along(a.U, u) else 0
+					local progressB = if stretch then progress + along(b.U, u) else 0
 					local ends = {}
-					for k, da in from do
-						local db = to[k]
-						if db then
-							-- (Dashes carry on along a line that carries on)
-							if not (lastEnds[k] and math.abs(lastEnds[k] - da) < 1e-3) then
-								travelled[k] = 0.3125 * DOTTED_MARK_TILE_LENGTH
+					for k, baseA in from do
+						local baseB = to[k]
+						if baseB then
+							local da, db = baseA, baseB
+							local pb = nil
+							if stretch then
+								local length
+								da = spiralOffset(stretch, k, baseA, math.max(progressA, 0), a)
+								db, length = spiralOffset(stretch, k, baseB, math.max(progressB, 0), b)
+								if da and not db and progressB > progressA then
+									-- (Running out to the ring's edge part way along)
+									local t = math.clamp((length - progressA) / (progressB - progressA), 0, 1)
+									pb = between(a, b, t, offsetAt({ Outer = 0 }, a, b, t), markHeight)
+								end
 							end
-							local pa, pb = point(a, da, markHeight), point(b, db, markHeight)
-							strip(pa, pb, laneColor, MARK_WIDTH, true, travelled[k])
-							travelled[k] += (pb - pa).Magnitude
-							ends[k] = db
+							if da and (db or pb) then
+								-- (Dashes carry on along a line that carries on)
+								if not (lastEnds[k] and math.abs(lastEnds[k] - da) < 1e-3) then
+									travelled[k] = 0.3125 * DOTTED_MARK_TILE_LENGTH
+								end
+								local pa = point(a, da, markHeight)
+								pb = pb or point(b, db, markHeight)
+								strip(pa, pb, laneColor, MARK_WIDTH, true, travelled[k])
+								travelled[k] += (pb - pa).Magnitude
+								ends[k] = db
+							end
 						end
 					end
 					lastEnds = ends

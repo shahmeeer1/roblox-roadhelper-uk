@@ -67,11 +67,13 @@ return function(t: TestTypes.TestContext)
 		-- arm skewed 25 degrees with a flare and automatic arrows
 		rectangle.Arms = "0,1,2,0,0,1,L/A/AR;100,1,1;200,1,0;300,2,1,180,25,1"
 		-- An oval ring of two lanes, three from beside one arm (gained on the
-		-- outside) and back to two by the island (dropped on the inside)
+		-- outside) and back to two by the island (dropped on the inside),
+		-- with spiral lane lines
 		local sectioned = table.clone(base)
 		sectioned.IslandShape = "-60,0,45;60,0,45"
 		sectioned.Arms = "0,1,1;120,2,2,0,0,1;240,1,1"
 		sectioned.RingSections = "60,3;200,2,In"
+		sectioned.RingMarkings = "Spiral"
 		local models = {
 			buildRoundabout(round, CFrame.new(origin + Vector3.new(-200, 0, 0))),
 			buildRoundabout(rectangle, CFrame.new(origin + Vector3.new(220, 0, 0))),

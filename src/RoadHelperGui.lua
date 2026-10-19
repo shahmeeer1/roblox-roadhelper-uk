@@ -1009,6 +1009,26 @@ local function RoundaboutPanel(props: {
 			end,
 		})
 	end
+	local markingChips: { [string]: any } = {
+		ListLayout = e("UIListLayout", {
+			FillDirection = Enum.FillDirection.Horizontal,
+			HorizontalAlignment = Enum.HorizontalAlignment.Left,
+			SortOrder = Enum.SortOrder.LayoutOrder,
+		}),
+		Corner = e("UICorner", {
+			CornerRadius = UDim.new(0, 4),
+		}),
+	}
+	for index, style in { "Concentric", "Spiral" } do
+		markingChips[style] = e(ChipForToggle, {
+			Text = style,
+			IsCurrent = state.RingMarkings == style,
+			LayoutOrder = index,
+			OnClick = function()
+				props.RoundaboutAction("RingMarkings", style)
+			end,
+		})
+	end
 	local function halfButton(text: string, order: number, disabled: boolean, onClick: () -> ())
 		return e("Frame", {
 			Size = UDim2.new(0.5, -2, 0, 0),
@@ -1185,11 +1205,25 @@ local function RoundaboutPanel(props: {
 					}, arrowRows),
 				})
 				else nil,
+			LanesWarning = if state.ArmExit > state.ArmRingLanes
+				then e("TextLabel", {
+					Size = UDim2.new(1, 0, 0, 0),
+					AutomaticSize = Enum.AutomaticSize.Y,
+					BackgroundTransparency = 1,
+					TextColor3 = Colors.OFFWHITE,
+					Text = `This arm has more exit lanes than the ring has where it leaves ({state.ArmRingLanes}), so not all of them can be fed. Give the ring more lanes here with a ring section, or this arm fewer exit lanes.`,
+					TextWrapped = true,
+					TextXAlignment = Enum.TextXAlignment.Left,
+					Font = Enum.Font.SourceSans,
+					TextSize = 16,
+					LayoutOrder = 8,
+				})
+				else nil,
 			Remove = e("Frame", {
 				Size = UDim2.new(1, 0, 0, 0),
 				AutomaticSize = Enum.AutomaticSize.Y,
 				BackgroundTransparency = 1,
-				LayoutOrder = 8,
+				LayoutOrder = 9,
 			}, {
 				Button = e(OperationButton, {
 					Text = "Remove Arm",
@@ -1367,6 +1401,20 @@ local function RoundaboutPanel(props: {
 				LayoutOrder = 10,
 			})
 			else nil,
+		RingMarkings = e(HelpGui.WithHelpIcon, {
+			Help = e(HelpGui.BasicTooltip, {
+				HelpRichText = "How the lane lines run round the ring:"
+					.. "\n\u{2022} <b>Concentric</b>: round the island."
+					.. "\n\u{2022} <b>Spiral</b>: each line sweeps outward to the next exit, so the outer lanes lead off it and the lane line between leaving and continuing traffic runs into the exit's splitter (common on larger UK roundabouts).",
+			}),
+			LayoutOrder = 12,
+			Subject = e("Frame", {
+				Size = UDim2.new(1, 0, 0, 0),
+				BorderSizePixel = 0,
+				BackgroundColor3 = Colors.ACTION_BLUE,
+				AutomaticSize = Enum.AutomaticSize.Y,
+			}, markingChips),
+		}),
 		RingTaperLength = if state.RingSections > 0
 			then numberField(
 				"Lane Change Length",

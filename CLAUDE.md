@@ -173,6 +173,13 @@ lazy-loads `src/main.lua` on first activation.
   is mirrored exactly in the generator, which adds stations through each lane change; edges
   "beyond the outer edge" are `{ Outer = x }` offsets there. Boundary knobs in
   `IslandShapeHandles` select (`selectedSection`) and drag them.
+- Roundabout ring markings (`RingMarkings`): "Concentric" (default) or "Spiral". Spiral
+  stretches run from the end of one exit arm's mouth (its entry-side kerb) to the end of the
+  next's; over a stretch line k sweeps out by that exit's lanes (capped at ring lanes - 1),
+  so the line between continuing and leaving lanes ends at the exit's nose (lat
+  `exitSide*Splitter/2` at the ring edge) and lines between leaving lanes meet the exit's own
+  lane lines there. The exit side of an arm is its upstream side round the ring. Markings
+  only: nothing in RoadMath depends on it.
 - The Adjust dir/grade/bank rotations all pivot about the endpoint centre point, so endpoint
   *positions* are invariant under angle edits — only move edits Size/pivot.
 - Joints are purely spatial: two ends within `RoadMath.JOINT_TOLERANCE` facing opposite ways.
