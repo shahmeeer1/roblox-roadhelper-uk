@@ -127,6 +127,13 @@ export type SelectionState = {
 -- (the selected line's, or those new lines get)
 export type MarkingState = {
 	Active: boolean,
+	-- "Line" (draw a line) or "Zone" (divide a stretch of road into lanes)
+	Tool: "Line" | "Zone",
+	-- Zone tool: the lanes to divide into, whether the sides are drawn too,
+	-- and which side is being drawn (1 or 2)
+	ZoneLanes: number,
+	ZoneEdges: boolean,
+	ZoneSide: number,
 	Drawing: boolean,
 	DraftPoints: number,
 	LineSelected: boolean,
@@ -1992,6 +1999,14 @@ local function createRoadSession(plugin: Plugin)
 		Gap = Markings.STYLE_DEFAULTS.Dashed.Gap,
 	}
 
+	-- The tool: drawing lines, or marking out a "zone" (a stretch of road,
+	-- by its two sides) to divide into lanes. A zone's first side is held
+	-- here once it's done, while the second is drawn as the draft.
+	local markingTool: "Line" | "Zone" = "Line"
+	local zoneLanes = 3
+	local zoneEdges = false
+	local zoneSideA: { Vector3 } = {}
+
 	-- The selected line, if it still exists (undo can remove it)
 	local function getSelectedLine(): Model?
 		local line = selectedLine
@@ -2014,9 +2029,12 @@ local function createRoadSession(plugin: Plugin)
 	end
 
 	local function startDraft(position: Vector3, surface: Instance)
-		-- On the road clicked, so it moves with it (else a markings folder)
-		local road = RoadMath.segmentFromDescendant(surface)
-		draftParent = if road then road.Model else nil
+		-- On the road clicked, so it moves with it (else a markings folder);
+		-- a zone's second side stays on its first side's road
+		if #zoneSideA == 0 then
+			local road = RoadMath.segmentFromDescendant(surface)
+			draftParent = if road then road.Model else nil
+		end
 		draft = { position }
 		selectedLine, selectedPoint = nil, nil
 		changeSignal:Fire()
@@ -2025,10 +2043,61 @@ local function createRoadSession(plugin: Plugin)
 	local function cancelDraft()
 		draft = {}
 		draftParent = nil
+		zoneSideA = {}
+		changeSignal:Fire()
+	end
+
+	-- Where drawn lines go: the road they were started on, or a folder
+	local function markingParent(parent: Instance?): Instance
+		if parent and parent:IsDescendantOf(workspace) then
+			return parent
+		end
+		local folder = workspace:FindFirstChild("RoadMarkings")
+		if not folder then
+			folder = Instance.new("Folder")
+			folder.Name = "RoadMarkings"
+			folder.Parent = workspace
+		end
+		return assert(folder)
+	end
+
+	-- Finish the zone's current side: the first side done moves on to the
+	-- second, and the second done draws the lane lines dividing the two
+	-- (and, if wanted, the sides themselves) as ordinary lines
+	local function finishZoneSide()
+		if #draft < 2 then
+			return
+		end
+		if #zoneSideA == 0 then
+			zoneSideA = draft
+			draft = {}
+			changeSignal:Fire()
+			return
+		end
+		local lines = Markings.laneZoneLines(zoneSideA, draft, zoneLanes, zoneEdges, markingDefaults.Curved)
+		local parent = markingParent(draftParent)
+		draft, zoneSideA, draftParent = {}, {}, nil
+		if #lines > 0 then
+			beginRecording("Draw Lane Zone")
+			for _, line in lines do
+				local options = table.clone(markingDefaults)
+				if line.Edge then
+					-- The sides are solid edge lines
+					local solid = Markings.STYLE_DEFAULTS.Solid
+					options.Style, options.Width, options.Dash, options.Gap = "Solid", solid.Width, solid.Dash, solid.Gap
+				end
+				Markings.create(parent, line.Points, options)
+			end
+			finishRecording()
+		end
 		changeSignal:Fire()
 	end
 
 	local function finishDraft()
+		if markingTool == "Zone" then
+			finishZoneSide()
+			return
+		end
 		if #draft < 2 then
 			cancelDraft()
 			return
@@ -2038,16 +2107,7 @@ local function createRoadSession(plugin: Plugin)
 		draft = {}
 		draftParent = nil
 		beginRecording("Draw Marking")
-		if not parent or not parent:IsDescendantOf(workspace) then
-			local folder = workspace:FindFirstChild("RoadMarkings")
-			if not folder then
-				folder = Instance.new("Folder")
-				folder.Name = "RoadMarkings"
-				folder.Parent = workspace
-			end
-			parent = folder
-		end
-		Markings.create(assert(parent), points, table.clone(markingDefaults))
+		Markings.create(markingParent(parent), points, table.clone(markingDefaults))
 		finishRecording()
 		changeSignal:Fire()
 	end
@@ -2057,7 +2117,11 @@ local function createRoadSession(plugin: Plugin)
 			return
 		end
 		if not on then
-			finishDraft()
+			if markingTool == "Zone" then
+				cancelDraft()
+			else
+				finishDraft()
+			end
 			selectedLine, selectedPoint = nil, nil
 		else
 			-- The endpoint handles step aside
@@ -2088,6 +2152,12 @@ local function createRoadSession(plugin: Plugin)
 		end,
 		GetDraftCurved = function()
 			return markingDefaults.Curved
+		end,
+		GetZone = function()
+			if markingTool ~= "Zone" then
+				return nil
+			end
+			return { SideA = zoneSideA, Lanes = zoneLanes, IncludeEdges = zoneEdges }
 		end,
 		StartDraft = startDraft,
 		AddDraftPoint = function(position: Vector3)
@@ -2133,8 +2203,9 @@ local function createRoadSession(plugin: Plugin)
 		end,
 	})
 
-	-- Panel actions: on the line being drawn "Finish", "Cancel" and
-	-- "UndoPoint"; "Style", "Colour", "Curved", "Width", "Dash" and "Gap" set
+	-- Panel actions: "Tool" ("Line" or "Zone"), and for zones "ZoneLanes" and
+	-- "ZoneEdges"; on the line (or zone side) being drawn "Finish", "Cancel"
+	-- and "UndoPoint"; "Style", "Colour", "Curved", "Width", "Dash" and "Gap" set
 	-- the selected line's options (and new lines'); "RemovePoint" and
 	-- "Delete" act on the selected line, and "Deselect" deselects it
 	local function markingAction(action: string, value: any)
@@ -2146,9 +2217,30 @@ local function createRoadSession(plugin: Plugin)
 			return
 		elseif action == "UndoPoint" then
 			table.remove(draft)
-			if #draft == 0 then
+			if #draft == 0 and #zoneSideA > 0 then
+				-- Back into the zone's first side
+				draft, zoneSideA = zoneSideA, {}
+			elseif #draft == 0 then
 				draftParent = nil
 			end
+			changeSignal:Fire()
+			return
+		elseif action == "Tool" then
+			local tool: "Line" | "Zone" = if value == "Zone" then "Zone" else "Line"
+			if tool ~= markingTool then
+				cancelDraft()
+				markingTool = tool
+				selectedLine, selectedPoint = nil, nil
+				updateDragger()
+			end
+			changeSignal:Fire()
+			return
+		elseif action == "ZoneLanes" then
+			zoneLanes = math.clamp(math.round(value), 1, 12)
+			changeSignal:Fire()
+			return
+		elseif action == "ZoneEdges" then
+			zoneEdges = value == true
 			changeSignal:Fire()
 			return
 		elseif action == "Deselect" then
@@ -2211,7 +2303,11 @@ local function createRoadSession(plugin: Plugin)
 		local options = if line then Markings.getOptions(line) else markingDefaults
 		return {
 			Active = markingMode,
-			Drawing = #draft > 0,
+			Tool = markingTool,
+			ZoneLanes = zoneLanes,
+			ZoneEdges = zoneEdges,
+			ZoneSide = if #zoneSideA > 0 then 2 else 1,
+			Drawing = #draft > 0 or #zoneSideA > 0,
 			DraftPoints = #draft,
 			LineSelected = line ~= nil,
 			PointCount = if line then #Markings.getWorldPoints(line) else 0,

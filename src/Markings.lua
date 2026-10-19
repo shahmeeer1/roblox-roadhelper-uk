@@ -428,4 +428,136 @@ function Markings.distanceTo(line: Model, position: Vector3): number
 	return best
 end
 
+--------------------------------------------------------------------------------
+-- Lane zones
+--------------------------------------------------------------------------------
+
+-- A path resampled into `count` points at equal distances along it, ends
+-- included
+function Markings.resamplePath(path: { Vector3 }, count: number): { Vector3 }
+	if #path < 2 or count < 2 then
+		return table.clone(path)
+	end
+	local cumulative = { 0 }
+	for i = 2, #path do
+		cumulative[i] = cumulative[i - 1] + (path[i] - path[i - 1]).Magnitude
+	end
+	local total = cumulative[#path]
+	if total < 1e-6 then
+		return table.clone(path)
+	end
+	local result = {}
+	local segment = 1
+	for k = 0, count - 1 do
+		local distance = total * k / (count - 1)
+		while segment < #path - 1 and cumulative[segment + 1] < distance do
+			segment += 1
+		end
+		local span = cumulative[segment + 1] - cumulative[segment]
+		local t = if span > 1e-9 then (distance - cumulative[segment]) / span else 0
+		table.insert(result, path[segment]:Lerp(path[segment + 1], math.clamp(t, 0, 1)))
+	end
+	return result
+end
+
+local function distanceToChord(p: Vector3, a: Vector3, b: Vector3): number
+	local ab = b - a
+	local lengthSq = ab:Dot(ab)
+	if lengthSq < 1e-12 then
+		return (p - a).Magnitude
+	end
+	local t = math.clamp((p - a):Dot(ab) / lengthSq, 0, 1)
+	return (p - (a + ab * t)).Magnitude
+end
+
+-- A path reduced to the fewest points that keep it within `tolerance` of the
+-- original (Ramer-Douglas-Peucker), ends included
+function Markings.simplifyPath(path: { Vector3 }, tolerance: number): { Vector3 }
+	if #path <= 2 then
+		return table.clone(path)
+	end
+	local keep = { [1] = true, [#path] = true }
+	local stack = { { 1, #path } }
+	while #stack > 0 do
+		local range = table.remove(stack) :: { number }
+		local first, last = range[1], range[2]
+		local worst, worstIndex = 0, nil
+		for i = first + 1, last - 1 do
+			local distance = distanceToChord(path[i], path[first], path[last])
+			if distance > worst then
+				worst, worstIndex = distance, i
+			end
+		end
+		if worstIndex and worst > tolerance then
+			keep[worstIndex] = true
+			table.insert(stack, { first, worstIndex })
+			table.insert(stack, { worstIndex, last })
+		end
+	end
+	local result = {}
+	for i, point in path do
+		if keep[i] then
+			table.insert(result, point)
+		end
+	end
+	return result
+end
+
+-- How closely simplified lane lines follow the full path (studs; the lines
+-- are drawn as smooth curves through their points, which then follow it much
+-- more closely than the chords between them do), and about how far apart the
+-- lines are sampled between the two sides
+local ZONE_TOLERANCE = 0.6
+local ZONE_SPACING = 4
+
+export type ZoneLine = {
+	Points: { Vector3 },
+	-- One of the two sides themselves rather than a line dividing them
+	Edge: boolean,
+}
+
+-- The lines dividing the space between two sides (each a list of points
+-- along one edge of a stretch of road) into `lanes` equal lanes: lane line k
+-- of `lanes` runs between the two sides at k / lanes of the way across,
+-- matching the sides up by how far along each they are. Each is reduced to
+-- a few points so it stays easy to bend by hand. With `includeEdges` the two
+-- sides themselves come too, through exactly the points given.
+function Markings.laneZoneLines(
+	sideA: { Vector3 },
+	sideB: { Vector3 },
+	lanes: number,
+	includeEdges: boolean,
+	curved: boolean
+): { ZoneLine }
+	local lines: { ZoneLine } = {}
+	if #sideA < 2 or #sideB < 2 then
+		return lines
+	end
+	local pathA = Markings.samplePath(sideA, curved)
+	local pathB = Markings.samplePath(sideB, curved)
+	local function length(path: { Vector3 }): number
+		local total = 0
+		for i = 2, #path do
+			total += (path[i] - path[i - 1]).Magnitude
+		end
+		return total
+	end
+	local count = math.max(8, math.ceil(math.max(length(pathA), length(pathB)) / ZONE_SPACING))
+	local a = Markings.resamplePath(pathA, count)
+	local b = Markings.resamplePath(pathB, count)
+	for k = 1, lanes - 1 do
+		local across = k / lanes
+		local line = {}
+		for i = 1, count do
+			table.insert(line, a[i]:Lerp(b[i], across))
+		end
+		table.insert(lines, { Points = Markings.simplifyPath(line, ZONE_TOLERANCE), Edge = false })
+	end
+	if includeEdges then
+		table.insert(lines, { Points = table.clone(sideA), Edge = true })
+		table.insert(lines, { Points = table.clone(sideB), Edge = true })
+	end
+	return lines
+end
+
 return Markings

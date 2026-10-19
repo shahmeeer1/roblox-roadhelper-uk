@@ -103,4 +103,46 @@ return function(t: TestTypes.TestContext)
 			error(err, 0)
 		end
 	end)
+	t.test("lane zones divide the space between two sides evenly", function()
+		local function expectNear(value: number, expected: number, tolerance: number, message: string)
+			if math.abs(value - expected) > tolerance then
+				t.fail(`{message}: {value} is not {expected}`)
+			end
+		end
+		-- Straight parallel sides 30 apart, 3 lanes: lines a third and two
+		-- thirds across, each just its two end points
+		local straight = Markings.laneZoneLines(
+			{ Vector3.new(0, 0, 0), Vector3.new(100, 0, 0) },
+			{ Vector3.new(0, 0, 30), Vector3.new(100, 0, 30) },
+			3, false, true
+		)
+		t.expect(#straight).toBe(2)
+		t.expect(#straight[1].Points).toBe(2)
+		expectNear(straight[1].Points[1].Z, 10, 1e-6, "first lane line")
+		expectNear(straight[2].Points[1].Z, 20, 1e-6, "second lane line")
+
+		-- Concentric quarter arcs (radii 60 and 108) give lines on radii 76
+		-- and 92, in a handful of points
+		local function arc(radius: number): { Vector3 }
+			local points = {}
+			for i = 0, 6 do
+				local angle = math.rad(15 * i)
+				table.insert(points, Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius))
+			end
+			return points
+		end
+		local arcs = Markings.laneZoneLines(arc(60), arc(108), 3, false, true)
+		for index, radius in { 76, 92 } do
+			t.expect(#arcs[index].Points <= 10).toBe(true)
+			for _, point in Markings.samplePath(arcs[index].Points, true) do
+				expectNear(math.sqrt(point.X ^ 2 + point.Z ^ 2), radius, 0.5, "arc lane line radius")
+			end
+		end
+
+		-- One lane needs no dividers; edges come only when asked for
+		t.expect(#Markings.laneZoneLines(arc(60), arc(108), 1, false, true)).toBe(0)
+		local edged = Markings.laneZoneLines(arc(60), arc(108), 2, true, true)
+		t.expect(#edged).toBe(3)
+		t.expect(edged[2].Edge and edged[3].Edge and not edged[1].Edge).toBe(true)
+	end)
 end

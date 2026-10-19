@@ -1538,17 +1538,33 @@ local function MarkingsPanel(props: {
 		table.insert(styleChoices, { Value = style, Text = MARKING_STYLE_LABELS[style] or style })
 	end
 	local broken = state.Style == "Dashed" or state.Style == "GiveWay"
-	local applies = if state.LineSelected then "the selected line" else "new lines"
+	local zone = state.Tool == "Zone"
+	local applies = if state.LineSelected then "the selected line" elseif zone then "a zone's lines" else "new lines"
 	return e(SubPanel, {
-		Title = if state.Drawing
-			then `Drawing a Line ({state.DraftPoints} points)`
+		Title = if zone and state.Drawing
+			then `Lane Zone: side {state.ZoneSide} ({state.DraftPoints} points)`
+			elseif zone then "Lane Zone"
+			elseif state.Drawing then `Drawing a Line ({state.DraftPoints} points)`
 			elseif state.LineSelected then "Road Marking"
 			else "Draw Markings",
 		Padding = UDim.new(0, 6),
 		LayoutOrder = props.LayoutOrder,
 	}, {
+		Tool = chips(
+			0,
+			"<b>Line</b>: draw a line through points you click, or select and edit one."
+				.. "\n<b>Lane Zone</b>: mark out a stretch of road by clicking along its two sides, and have its lane lines drawn evenly between them for you. They're ordinary lines you can bend afterwards.",
+			{ { Value = "Line", Text = "Line" }, { Value = "Zone", Text = "Lane Zone" } },
+			state.Tool,
+			"Tool"
+		),
 		Hint = hint(
-			if state.Drawing
+			if zone
+				then (if state.ZoneSide == 2
+					then "Click points along the opposite side of the stretch, then double-click or press Enter to draw the lanes. Esc cancels."
+					elseif state.Drawing then "Click points along one side of the stretch (such as the island's edge), then double-click or press Enter to go on to the other side. Esc cancels."
+					else "Click points along one side of a stretch of road (such as the island's edge), then the other (such as the ring's outer edge); the lane lines are drawn between them. Points snap to the road's markings; hold Alt to place freely.")
+				elseif state.Drawing
 				then "Click to add points; double-click or press Enter to finish, Esc to cancel. Points snap to the ends of other markings (green) or onto them (blue); hold Alt to place freely."
 				elseif state.LineSelected then "Drag the white knobs to move points (click one to select it) and the blue ones to add a point. Click elsewhere to deselect the line."
 				else "Click on a road to start a line, or click a line to edit it. Points snap to the ends of other markings, so lines join up with the road's own; hold Alt to place freely.",
@@ -1557,7 +1573,7 @@ local function MarkingsPanel(props: {
 		DrawButtons = if state.Drawing
 			then buttonRow(2, {
 				{
-					Text = "Finish",
+					Text = if zone and state.ZoneSide == 1 then "Next Side" else "Finish",
 					Disabled = state.DraftPoints < 2,
 					Color = Colors.ACTION_BLUE,
 					OnClick = function()
@@ -1581,6 +1597,25 @@ local function MarkingsPanel(props: {
 					end,
 				},
 			})
+			else nil,
+		ZoneLanes = if zone
+			then numberField(
+				"Lanes",
+				"How many lanes to divide the stretch into. That many minus one lane lines are drawn between its two sides, evenly spaced.",
+				2.5,
+				state.ZoneLanes,
+				1,
+				"ZoneLanes"
+			)
+			else nil,
+		ZoneEdges = if zone
+			then chips(
+				2.6,
+				"Whether the two sides you clicked are drawn as solid lines too. Leave this off where the road already has its own edge lines.",
+				{ { Value = false, Text = "Lane lines only" }, { Value = true, Text = "Include edge lines" } },
+				state.ZoneEdges,
+				"ZoneEdges"
+			)
 			else nil,
 		Style = chips(
 			3,

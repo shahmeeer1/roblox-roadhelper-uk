@@ -182,6 +182,12 @@ lazy-loads `src/main.lua` on first activation.
   and hold `gestureActive` for the whole press, because a dragger nudge mid-click re-runs
   mouseUp/mouseDown. Points snap to the ends of generated `RoadMarking` strips and drawn
   lines' points, else onto generated strips (Alt places freely).
+  The Lane Zone tool (`markingTool` "Zone") marks out a stretch by clicking along its two
+  sides (side one is held in `zoneSideA`, side two is the draft); `Markings.laneZoneLines`
+  resamples both curves by distance along them and draws lane line k of N at k/N across,
+  each reduced by Ramer-Douglas-Peucker (tolerance 0.6, since the line is drawn as a curve
+  through its points) so the result is a few points of ordinary editable lines, created in
+  one undo step.
 - The Adjust dir/grade/bank rotations all pivot about the endpoint centre point, so endpoint
   *positions* are invariant under angle edits — only move edits Size/pivot.
 - Joints are purely spatial: two ends within `RoadMath.JOINT_TOLERANCE` facing opposite ways.

@@ -6,6 +6,9 @@
 	  each further click adds a point. Double-click or press Enter to finish
 	  (Esc cancels). The line so far is previewed, with the next point
 	  following the cursor.
+	- In lane zone mode the same clicks mark out a stretch of road instead:
+	  one side, then (after Enter or double-click) the other. The lane lines
+	  that would divide it are previewed, and finishing draws them.
 	- Clicking an existing line selects it: its points get knobs (drag to
 	  move, click to select one for the panel) and each stretch between them
 	  a smaller knob in its middle (drag to add a point there). Clicking
@@ -60,6 +63,10 @@ export type Props = {
 	-- whether its points follow a curve, for the preview
 	GetDraft: () -> { Vector3 },
 	GetDraftCurved: () -> boolean,
+	-- Lane zone mode: nil when off, else the first side's points once
+	-- it's done (empty before), the lanes to divide into, and whether the
+	-- sides themselves are drawn too
+	GetZone: () -> { SideA: { Vector3 }, Lanes: number, IncludeEdges: boolean }?,
 	-- Start a line with its first point on `surface` (what was clicked), add
 	-- a point, and finish or cancel it
 	StartDraft: (position: Vector3, surface: Instance) -> (),
@@ -122,9 +129,15 @@ function MarkingHandles:_surfaceUnder(mouseRay, ignoreLine: Model?)
 	}
 end
 
+-- Whether a lane zone's first side is done, so its second is being drawn
+function MarkingHandles:_zoneUnderway(): boolean
+	local zone = self._props.GetZone()
+	return zone ~= nil and #zone.SideA > 0
+end
+
 function MarkingHandles:update(draggerToolModel, selectionInfo)
 	self._knobs = {}
-	if not self._props.IsActive() or #self._props.GetDraft() > 0 then
+	if not self._props.IsActive() or #self._props.GetDraft() > 0 or self:_zoneUnderway() then
 		return
 	end
 	local line = self._props.GetSelectedLine()
@@ -189,15 +202,16 @@ function MarkingHandles:hitTest(mouseRay, ignoreExtraThreshold)
 	if closestId then
 		return closestId, closestDistance, true
 	end
-	local drafting = #self._props.GetDraft() > 0
+	local drafting = #self._props.GetDraft() > 0 or self:_zoneUnderway()
 	local surface = self:_surfaceUnder(mouseRay, nil)
 	if not surface then
 		-- (Clicking the sky deselects)
 		return "Sky", RAY_LENGTH, false
 	end
 	self._hover = surface
-	if not drafting then
-		-- An existing line under the cursor, to select
+	if not drafting and not self._props.GetZone() then
+		-- An existing line under the cursor, to select (lines are edited
+		-- with the line tool, not while marking out a lane zone)
 		local pickRadius = PICK_SCALE * self._draggerContext:getHandleScale(surface.Raw)
 		local best, bestDistance = nil, math.huge
 		for _, line in Markings.allLines() do
@@ -256,7 +270,32 @@ function MarkingHandles:render(hoveredHandleId)
 
 	local draft = self._props.GetDraft()
 	local hover = self._hover
-	if #draft > 0 then
+	local zone = self._props.GetZone()
+	if zone and (#draft > 0 or #zone.SideA > 0) then
+		-- A lane zone being marked out: the first side once it's done, the
+		-- side being drawn on to where the next point would go, and the lane
+		-- lines they'd give
+		local curved = self._props.GetDraftCurved()
+		local points = table.clone(draft)
+		if hover and hoveredHandleId == "Surface" then
+			table.insert(points, hover.Position)
+		end
+		if #zone.SideA > 0 then
+			drawPath("ZoneSideA", Markings.samplePath(zone.SideA, curved), SELECTED_COLOR, zone.SideA[1])
+			if #points >= 2 then
+				for index, line in Markings.laneZoneLines(zone.SideA, points, zone.Lanes, false, curved) do
+					drawPath("ZoneLane" .. index .. "_", Markings.samplePath(line.Points, curved), HOVER_COLOR, line.Points[1])
+				end
+			end
+		end
+		if #points >= 2 then
+			drawPath("Draft", Markings.samplePath(points, curved), DRAFT_COLOR, points[1])
+		end
+		for index, point in draft do
+			children["DraftPoint" .. index] =
+				sphereElement(point, KNOB_RADIUS * 0.7 * self._draggerContext:getHandleScale(point), DRAFT_COLOR)
+		end
+	elseif #draft > 0 then
 		-- The line so far, on to where the next point would go
 		local points = table.clone(draft)
 		if hover then
@@ -293,7 +332,8 @@ function MarkingHandles:render(hoveredHandleId)
 		end
 	end
 	-- Where a click would put a point, coloured by what it snapped to
-	if hover and hoveredHandleId == "Surface" and (#draft > 0 or not self._hoverLine) then
+	local underway = #draft > 0 or self:_zoneUnderway()
+	if hover and hoveredHandleId == "Surface" and (underway or not self._hoverLine) then
 		local color = if hover.Snap == "End" then SNAP_END_COLOR elseif hover.Snap == "Line" then SNAP_LINE_COLOR else CURSOR_COLOR
 		children.Cursor = sphereElement(hover.Position, 0.35 * self._draggerContext:getHandleScale(hover.Position), color, 0.2)
 	end
@@ -368,6 +408,9 @@ function MarkingHandles:mouseUp(mouseRay)
 			else
 				props.AddDraftPoint(hover.Position)
 			end
+		elseif self:_zoneUnderway() then
+			-- A zone's second side starts here
+			props.StartDraft(hover.Position, hover.Instance)
 		elseif hoverLine then
 			props.SelectLine(hoverLine, nil)
 		elseif props.GetSelectedLine() then
@@ -383,7 +426,7 @@ function MarkingHandles:mouseUp(mouseRay)
 end
 
 function MarkingHandles:keyDown(keyCode): boolean
-	if not self._props.IsActive() or #self._props.GetDraft() == 0 then
+	if not self._props.IsActive() or (#self._props.GetDraft() == 0 and not self:_zoneUnderway()) then
 		return false
 	end
 	if keyCode == Enum.KeyCode.Return or keyCode == Enum.KeyCode.KeypadEnter then
