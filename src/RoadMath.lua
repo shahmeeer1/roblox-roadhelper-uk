@@ -110,6 +110,10 @@ export type RoundaboutArm = {
 	-- RoadMath.laneArrows)
 	Flare: number,
 	Arrows: string,
+	-- Its splitter island's width (its own SplitterOverride, or the
+	-- roundabout's SplitterWidth when that's nil)
+	Splitter: number,
+	SplitterOverride: number?,
 	-- Where its axis meets the island outline, and its direction (the
 	-- outline's outward normal there, swung by the skew)
 	AttachX: number,
@@ -465,18 +469,19 @@ end
 	Exit lanes leaving and Entry lanes arriving. Traffic keeps to the
 	DriveSide, so (driving on the left) looking out along the arm the exit
 	lanes are on the left. Near the ring the exit and entry lanes part
-	around a splitter island SplitterWidth wide; the arm's kerbs curve into
+	around a splitter island SplitterWidth wide (or the arm's own); the arm's kerbs curve into
 	the ring's outer kerb with radius EntryKerbRadius.
 ]]
 local MAX_ARMS = 12
 
 -- An arm as stored: "angle,exit,entry" plus optionally
--- ",length,skew,flare,arrows". A length of 0 uses the roundabout's
+-- ",length,skew,flare,arrows,splitter". A length of 0 uses the roundabout's
 -- ArmLength; skew (degrees, within MAX_ARM_SKEW either way) swings the arm
 -- off square to the island edge, clockwise seen from above for positive
 -- values; flare is extra entry lanes at the give way line (up to
 -- MAX_ARM_FLARE); arrows are the entry lanes' arrows (see
--- RoadMath.laneArrows), "" for automatic.
+-- RoadMath.laneArrows), "" for automatic; splitter is this arm's own
+-- splitter island width (absent for the roundabout's SplitterWidth).
 export type ArmSpec = {
 	Angle: number,
 	Exit: number,
@@ -485,6 +490,7 @@ export type ArmSpec = {
 	Skew: number,
 	Flare: number?,
 	Arrows: string?,
+	Splitter: number?,
 }
 
 local MAX_ARM_SKEW = 45
@@ -517,6 +523,9 @@ function RoadMath.parseArms(value: any): { ArmSpec }
 					-- (Only an arm with entry lanes can flare)
 					Flare = if entryLanes > 0 then math.clamp(math.floor(tonumber(parts[6]) or 0), 0, MAX_ARM_FLARE) else 0,
 					Arrows = sanitizeArrows(parts[7]),
+					Splitter = if parts[8] ~= nil and tonumber(parts[8]) ~= nil
+						then math.max(tonumber(parts[8]) :: number, 0)
+						else nil,
 				})
 			end
 		end
@@ -537,8 +546,10 @@ function RoadMath.serializeArms(arms: { ArmSpec }): string
 			tidy(arm.Skew or 0),
 			tostring(arm.Flare or 0),
 			sanitizeArrows(arm.Arrows),
+			if arm.Splitter then tidy(arm.Splitter) else "",
 		}
-		while #extras > 0 and (extras[#extras] == "0" or extras[#extras] == "") do
+		-- (A splitter of 0 is a real setting, unlike the others' zero)
+		while #extras > 0 and (extras[#extras] == "" or (extras[#extras] == "0" and #extras < 5)) do
 			table.remove(extras)
 		end
 		if #extras > 0 then
@@ -662,6 +673,7 @@ function RoadMath.roundaboutLayout(model: Instance): RoundaboutLayout
 	local sidewalkWidth = math.max(getNumberAttribute(model, "SidewalkWidth", RoadDefaults.SidewalkWidth), 0)
 	local ringWidth = lanes * laneWidth
 	local armLength = math.max(getNumberAttribute(model, "ArmLength", RoadDefaults.RoundaboutArmLength), 1)
+	local splitterWidth = math.max(getNumberAttribute(model, "SplitterWidth", RoadDefaults.RoundaboutSplitterWidth), 0)
 	local smallest = math.huge
 	for _, circle in circles do
 		smallest = math.min(smallest, circle.Radius)
@@ -701,6 +713,8 @@ function RoadMath.roundaboutLayout(model: Instance): RoundaboutLayout
 			Skew = arm.Skew,
 			Flare = arm.Flare or 0,
 			Arrows = arm.Arrows or "",
+			Splitter = arm.Splitter or splitterWidth,
+			SplitterOverride = arm.Splitter,
 			AttachX = px,
 			AttachZ = pz,
 			NX = nx,
@@ -726,7 +740,7 @@ function RoadMath.roundaboutLayout(model: Instance): RoundaboutLayout
 		),
 		Arms = arms,
 		ArmLength = armLength,
-		SplitterWidth = math.max(getNumberAttribute(model, "SplitterWidth", RoadDefaults.RoundaboutSplitterWidth), 0),
+		SplitterWidth = splitterWidth,
 		SplitterStyle = if model:GetAttribute("SplitterStyle") == "Hatched" then "Hatched" else "Kerbed",
 		EntryKerbRadius = math.max(
 			getNumberAttribute(model, "EntryKerbRadius", RoadDefaults.RoundaboutEntryKerbRadius),

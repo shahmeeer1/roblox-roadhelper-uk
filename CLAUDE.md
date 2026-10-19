@@ -155,7 +155,9 @@ lazy-loads `src/main.lua` on first activation.
   fields `,flare,arrows`: extra entry lanes at the give way line (kerb side, up to 3; full
   width for the first half of `FlareLength`, then tapering, never reaching the arm's end), and
   the entry lanes' arrows left to right as the driver sees them (`"LA/R"`, `-` for none, empty
-  for automatic per Highway Code rule 186; `RoadMath.laneArrows`, mirrored in the generator).
+  for automatic per Highway Code rule 186; `RoadMath.laneArrows`, mirrored in the generator),
+  then `,splitter`: this arm's own splitter island width (empty = the roundabout's
+  `SplitterWidth`; 0 is a real width, so it's kept when serialising).
   Kerb fillets are fitted to the arm's width where they touch its side (it narrows as the
   splitter and flare taper), the arm's road running straight out to the fillet's line until
   then.

@@ -1173,6 +1173,16 @@ local function RoundaboutPanel(props: {
 					"ArmFlare"
 				)
 				else nil,
+			Splitter = if state.ArmExit > 0 and state.ArmEntry > 0
+				then numberField(
+					"Splitter Width",
+					"Width of this arm's splitter island at the ring, in studs. It starts as the roundabout's Splitter Width; set it here to give this arm its own. Zero leaves just a centre line.",
+					6.5,
+					state.ArmSplitter,
+					0,
+					"ArmSplitter"
+				)
+				else nil,
 			Arrows = if #(state.ArmArrows or {}) > 0
 				then e(HelpGui.WithHelpIcon, {
 					Help = e(HelpGui.BasicTooltip, {
@@ -1351,7 +1361,7 @@ local function RoundaboutPanel(props: {
 		),
 		SplitterWidth = numberField(
 			"Splitter Width",
-			"Width of the splitter island between each arm's entry and exit lanes at the ring, in studs. It tapers away along the arm, hatched ahead of its kerbed nose. Zero leaves just a centre line.",
+			"Width of the splitter island between each arm's entry and exit lanes at the ring, in studs (an arm can be given its own). It tapers away along the arm, hatched ahead of its kerbed nose. Zero leaves just a centre line.",
 			20,
 			state.SplitterWidth,
 			0,

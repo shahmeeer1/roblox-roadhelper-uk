@@ -106,6 +106,8 @@ export type SelectionState = {
 	ArmOwnLength: number?,
 	ArmSkew: number?,
 	ArmFlare: number?,
+	-- The selected arm's splitter island width
+	ArmSplitter: number?,
 	-- The selected arm's entry lanes' arrows, left to right, and whether
 	-- they're automatic
 	ArmArrows: { string }?,
@@ -1734,6 +1736,7 @@ local function createRoadSession(plugin: Plugin)
 				Skew = arm.Skew,
 				Flare = arm.Flare,
 				Arrows = arm.Arrows,
+				Splitter = arm.SplitterOverride,
 			})
 		end
 		return specs
@@ -1901,6 +1904,11 @@ local function createRoadSession(plugin: Plugin)
 			fitRoundaboutSize(model)
 		elseif action == "ArmFlare" and armIndex then
 			specs[armIndex].Flare = math.clamp(math.round(value), 0, RoadMath.MAX_ARM_FLARE)
+			model:SetAttribute("Arms", RoadMath.serializeArms(specs))
+		elseif action == "ArmSplitter" and armIndex then
+			-- This arm's own splitter width (the roundabout's when it matches)
+			local width = math.max(value, 0)
+			specs[armIndex].Splitter = if math.abs(width - layout.SplitterWidth) < 1e-3 then nil else width
 			model:SetAttribute("Arms", RoadMath.serializeArms(specs))
 		elseif action == "ArmArrow" and armIndex then
 			-- Toggle one letter of one entry lane's arrow (value: { Lane,
@@ -2807,6 +2815,7 @@ local function createRoadSession(plugin: Plugin)
 			ArmOwnLength = if roundabout and roundaboutArm then roundabout.Arms[roundaboutArm].Length else nil,
 			ArmSkew = if roundabout and roundaboutArm then roundabout.Arms[roundaboutArm].Skew else nil,
 			ArmFlare = if roundabout and roundaboutArm then roundabout.Arms[roundaboutArm].Flare else nil,
+			ArmSplitter = if roundabout and roundaboutArm then roundabout.Arms[roundaboutArm].Splitter else nil,
 			ArmArrows = if roundabout and roundaboutArm
 				then RoadMath.laneArrows(
 					roundabout.Arms[roundaboutArm].Arrows,
@@ -3264,7 +3273,8 @@ local function createRoadSession(plugin: Plugin)
 	-- "AddCorner", "RemoveCorner", "CornerRadius", "RingLanes", "LaneWidth",
 	-- "SidewalkWidth", "ApronWidth", "AddArm", "ArmLength", "SplitterWidth",
 	-- "EntryKerbRadius", "SplitterStyle", and on the selected arm
-	-- "RemoveArm", "ArmExit", "ArmEntry", "ArmAngle", "ArmOwnLength", "ArmSkew"
+	-- "RemoveArm", "ArmExit", "ArmEntry", "ArmAngle", "ArmOwnLength", "ArmSkew",
+	-- "ArmFlare", "ArmSplitter"
 	session.RoundaboutAction = roundaboutAction
 
 	-- Draw Markings mode, its panel actions (see markingAction) and state

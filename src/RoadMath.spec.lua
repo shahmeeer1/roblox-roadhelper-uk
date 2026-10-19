@@ -1072,6 +1072,23 @@ return function(t: TestTypes.TestContext)
 		expectFuzzy(t, ending.WorldCFrame.LookVector, direction)
 	end)
 
+	t.test("roundabout arms: individual splitter widths", function()
+		local arms = RoadMath.parseArms("0,1,1;90,1,1,0,0,0,,0;180,1,1,0,0,0,,24.5")
+		t.expect(arms[1].Splitter).toBe(nil)
+		-- Zero is a real width, not "unset"
+		t.expect(arms[2].Splitter).toBe(0)
+		t.expect(arms[3].Splitter).toBe(24.5)
+		t.expect(RoadMath.serializeArms(arms)).toBe("0,1,1;90,1,1,0,0,0,,0;180,1,1,0,0,0,,24.5")
+
+		-- Arms without their own width use the roundabout's
+		local model = makeRoundabout({ IslandShape = "0,0,60", Arms = "0,1,1;90,1,1,0,0,0,,4", SplitterWidth = 10 })
+		local layout = assert(model.Roundabout)
+		t.expect(layout.Arms[1].Splitter).toBe(10)
+		t.expect(layout.Arms[1].SplitterOverride).toBe(nil)
+		t.expect(layout.Arms[2].Splitter).toBe(4)
+		t.expect(layout.Arms[2].SplitterOverride).toBe(4)
+	end)
+
 	t.test("roundabout arms: flares and lane arrows", function()
 		local arms = RoadMath.parseArms("0,1,2,0,0,1,la/x/AR;90,1,0,0,0,2;180,1,1,0,0,9")
 		t.expect(arms[1].Flare).toBe(1)

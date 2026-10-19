@@ -26,13 +26,14 @@ local defaultAttributes = {
 	-- "Spiral" (each sweeping out to the next exit, so a lane leads off it),
 	-- or "None" (for drawing your own)
 	RingMarkings = "Concentric",
-	-- The arms, "angle,exit,entry[,length,skew,flare,arrows];...": the
+	-- The arms, "angle,exit,entry[,length,skew,flare,arrows,splitter];...": the
 	-- direction from the island's centroid in degrees (atan2(z, x)), lanes
 	-- leaving and lanes entering, and optionally the arm's own length (0 for
 	-- ArmLength), skew off square to the island edge (degrees, up to 45 either
 	-- way), extra entry lanes it flares out to at the give way line (up to 3),
 	-- and its entry lanes' arrows left to right ("LA/R"; "-" for none, empty
-	-- for automatic)
+	-- for automatic), and its own splitter island width (absent for
+	-- SplitterWidth)
 	Arms = "0,1,1;90,1,1;180,1,1;270,1,1",
 	-- How far out from the ring the arms' entry flares reach
 	FlareLength = 90,
@@ -187,6 +188,7 @@ local function parseArms(value)
 					Skew = math.clamp(tonumber(parts[5]) or 0, -MAX_ARM_SKEW, MAX_ARM_SKEW),
 					Flare = if entryLanes > 0 then math.clamp(math.floor(tonumber(parts[6]) or 0), 0, MAX_ARM_FLARE) else 0,
 					Arrows = sanitizeArrows(parts[7]),
+					Splitter = if tonumber(parts[8]) then math.max(tonumber(parts[8]), 0) else nil,
 				})
 			end
 		end
@@ -572,7 +574,7 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 				Arrows = spec.Arrows,
 			}
 			-- A splitter island only separates two directions
-			arm.Splitter = if spec.Exit > 0 and spec.Entry > 0 then splitterWidth else 0
+			arm.Splitter = if spec.Exit > 0 and spec.Entry > 0 then (spec.Splitter or splitterWidth) else 0
 			-- Lanes on each side (+lat is the left, looking out)
 			arm.PlusLanes = if exitSide > 0 then spec.Exit else spec.Entry
 			arm.MinusLanes = if exitSide > 0 then spec.Entry else spec.Exit
