@@ -72,15 +72,8 @@ export type RoundaboutLayout = {
 	Circles: { RoundaboutCircle },
 	RingLanes: number,
 	LaneWidth: number,
-	-- The circulating carriageway's width at its widest: RingLanes *
-	-- LaneWidth, or the most lanes of any section
+	-- The circulating carriageway's width: RingLanes * LaneWidth
 	RingWidth: number,
-	-- Its sections (see Ring sections) in the order stored, none for a ring
-	-- of RingLanes all the way round, the ring's length (as positions round
-	-- it are measured) and how long lane changes are
-	Sections: { RingSection },
-	RingLength: number,
-	RingTaperLength: number,
 	-- The footway around the outside
 	SidewalkWidth: number,
 	-- The raised apron inside the ring (0 for none), kept within the
@@ -117,9 +110,6 @@ export type RoundaboutArm = {
 	-- RoadMath.laneArrows)
 	Flare: number,
 	Arrows: string,
-	-- The ring's width where it attaches, and its position round the ring
-	RingWidth: number,
-	Position: number,
 	-- Where its axis meets the island outline, and its direction (the
 	-- outline's outward normal there, swung by the skew)
 	AttachX: number,
@@ -630,18 +620,11 @@ function RoadMath.roundaboutStations(circles: { RoundaboutCircle }): { { PX: num
 	return stations
 end
 
--- Where the ray from (cx, cz) at an angle (radians) leaves the outline, the
--- outward normal there, and which station segment it's on (the segment from
--- station i to the next, part way t along it)
-function RoadMath.outlineHit(
-	stations,
-	cx: number,
-	cz: number,
-	angle: number
-): (number, number, number, number, number, number)
+-- Where the ray from (cx, cz) at an angle (radians) leaves the outline, and
+-- the outward normal there
+function RoadMath.outlineHit(stations, cx: number, cz: number, angle: number): (number, number, number, number)
 	local dx, dz = math.cos(angle), math.sin(angle)
 	local bestT, hitX, hitZ, hitNX, hitNZ = math.huge, cx, cz, dx, dz
-	local hitIndex, hitS = 1, 0
 	for i = 1, #stations do
 		local a, b = stations[i], stations[i % #stations + 1]
 		local ex, ez = b.PX - a.PX, b.PZ - a.PZ
@@ -656,11 +639,10 @@ function RoadMath.outlineHit(
 				local nx, nz = a.NX + (b.NX - a.NX) * s, a.NZ + (b.NZ - a.NZ) * s
 				local length = math.sqrt(nx * nx + nz * nz)
 				hitNX, hitNZ = nx / length, nz / length
-				hitIndex, hitS = i, math.clamp(s, 0, 1)
 			end
 		end
 	end
-	return hitX, hitZ, hitNX, hitNZ, hitIndex, hitS
+	return hitX, hitZ, hitNX, hitNZ
 end
 
 -- The island's centroid: the mean of its circle centres, always inside it
@@ -673,286 +655,13 @@ function RoadMath.islandCentroid(circles: { RoundaboutCircle }): (number, number
 	return cx / #circles, cz / #circles
 end
 
---[[
-	Ring sections (RingSections, "angle,lanes[,side];..."): the circulating
-	carriageway's lane count can change on the way round. Each boundary sits
-	where the ray from the island's centroid at its angle meets the outline,
-	and sets the lanes from there on in the direction of travel, up to the
-	next boundary (with none, the ring has RingLanes all the way round). The
-	ring's outer edge follows the lanes: they change over RingTaperLength
-	after a boundary, the edge easing out or in, and the side ("Out" or
-	"In") is which side of the ring the lane appears or ends on (only the
-	markings differ). A lane change can't overlap an arm's mouth, where the
-	kerbs need the ring's width steady, so it's moved clear of it, whichever
-	way is nearer.
-
-	Positions round the ring are distances along the outline offset by a
-	lane width, in the direction of travel, from the first outline station.
-	The generator mirrors all of this exactly.
-]]
-export type RingSectionSpec = {
-	Angle: number,
-	Lanes: number,
-	Side: "In" | "Out",
-}
-
-export type RingSection = {
-	Angle: number,
-	Lanes: number,
-	Side: "In" | "Out",
-	-- The lanes before it
-	Previous: number,
-	-- Its boundary's position round the ring, and where its lane change
-	-- starts (moved clear of the arms' mouths) and how long it is (0 for none)
-	Position: number,
-	Start: number,
-	Taper: number,
-	-- Whether the lane change could be kept clear of the arms' mouths
-	Clear: boolean,
-	-- Where the boundary meets the outline, the outward normal there, and
-	-- the ring's width there
-	X: number,
-	Z: number,
-	NX: number,
-	NZ: number,
-	Width: number,
-}
-
-type Station = { PX: number, PZ: number, NX: number, NZ: number }
-
--- Distances round the ring: along the outline offset by `reference`, in the
--- direction of travel (`direction` 1: station order; -1: against it)
-type RingMeasure = {
-	Stations: { Station },
-	Cumulative: { number },
-	Lengths: { number },
-	Total: number,
-	Direction: number,
-	Reference: number,
-}
-
-local MAX_RING_SECTIONS = 12
-RoadMath.MAX_RING_SECTIONS = MAX_RING_SECTIONS
--- Room kept clear of a lane change beyond an arm's kerbs
-local MOUTH_CLEARANCE = 4
--- A lane change takes at most this much of the way to the next boundary
-local TAPER_SHARE = 0.8
-
-local function smoothstep(u: number): number
-	return u * u * (3 - 2 * u)
-end
-
-function RoadMath.parseRingSections(value: any): { RingSectionSpec }
-	local sections: { RingSectionSpec } = {}
-	if typeof(value) == "string" then
-		for _, entry in string.split(value, ";") do
-			local parts = string.split(entry, ",")
-			local angle, lanes = tonumber(parts[1]), tonumber(parts[2])
-			if angle and lanes and #sections < MAX_RING_SECTIONS then
-				table.insert(sections, {
-					Angle = angle,
-					Lanes = math.max(math.floor(lanes), 1),
-					Side = if parts[3] == "In" then "In" else "Out",
-				})
-			end
-		end
-	end
-	return sections
-end
-
-function RoadMath.serializeRingSections(sections: { RingSectionSpec }): string
-	local entries = {}
-	for _, section in sections do
-		local entry = `{math.round(section.Angle * 100) / 100},{section.Lanes}`
-		if section.Side == "In" then
-			entry ..= ",In"
-		end
-		table.insert(entries, entry)
-	end
-	return table.concat(entries, ";")
-end
-
-local function ringMeasure(stations: { Station }, reference: number, direction: number): RingMeasure
-	local count = #stations
-	local cumulative, lengths = {}, {}
-	local total = 0
-	for i = 1, count do
-		local a, b = stations[i], stations[i % count + 1]
-		local dx = (b.PX + b.NX * reference) - (a.PX + a.NX * reference)
-		local dz = (b.PZ + b.NZ * reference) - (a.PZ + a.NZ * reference)
-		cumulative[i] = total
-		lengths[i] = math.sqrt(dx * dx + dz * dz)
-		total += lengths[i]
-	end
-	return {
-		Stations = stations,
-		Cumulative = cumulative,
-		Lengths = lengths,
-		Total = math.max(total, 1e-6),
-		Direction = direction,
-		Reference = reference,
-	}
-end
-
--- The ring position of the point t along the segment from station i
-local function ringPosition(measure: RingMeasure, i: number, t: number): number
-	local s = measure.Cumulative[i] + measure.Lengths[i] * t
-	return if measure.Direction > 0 then s else (measure.Total - s) % measure.Total
-end
-
--- The ring position nearest a point
-local function ringPositionOf(measure: RingMeasure, x: number, z: number): number
-	local stations = measure.Stations
-	local count = #stations
-	local r = measure.Reference
-	local best, bestI, bestT = math.huge, 1, 0
-	for i = 1, count do
-		local a, b = stations[i], stations[i % count + 1]
-		local ax, az = a.PX + a.NX * r, a.PZ + a.NZ * r
-		local ex, ez = b.PX + b.NX * r - ax, b.PZ + b.NZ * r - az
-		local lengthSq = ex * ex + ez * ez
-		local t = if lengthSq > 1e-12 then math.clamp(((x - ax) * ex + (z - az) * ez) / lengthSq, 0, 1) else 0
-		local dx, dz = ax + ex * t - x, az + ez * t - z
-		local distance = dx * dx + dz * dz
-		if distance < best then
-			best, bestI, bestT = distance, i, t
-		end
-	end
-	return ringPosition(measure, bestI, bestT)
-end
-
--- The stretch of ring (From to To) an arm's mouth spans with its kerbs:
--- `reach` either side of its mouth, along the ring
-local function mouthRange(
-	measure: RingMeasure,
-	px: number,
-	pz: number,
-	normalX: number,
-	normalZ: number,
-	nx: number,
-	nz: number,
-	skew: number,
-	ringWidth: number,
-	reach: number
-): { From: number, To: number }
-	local cosine = math.cos(skew)
-	local mx, mz = px + nx * ringWidth / cosine, pz + nz * ringWidth / cosine
-	local tx, tz = -normalZ, normalX
-	local along = reach / cosine
-	local total = measure.Total
-	local centre = ringPositionOf(measure, mx, mz)
-	local low, high = 0, 0
-	for _, sign in { -1, 1 } do
-		local u = ringPositionOf(measure, mx + tx * along * sign, mz + tz * along * sign)
-		local offset = (u - centre + total / 2) % total - total / 2
-		low, high = math.min(low, offset), math.max(high, offset)
-	end
-	return { From = centre + low, To = centre + high }
-end
-
--- Where each section's lane change goes (`positions`: its boundary's ring
--- position), kept clear of the mouths
-local function layoutRingSections(
-	specs: { RingSectionSpec },
-	positions: { number },
-	mouths: { { From: number, To: number } },
-	total: number,
-	taperLength: number
-): { any }
-	local order = {}
-	for i in specs do
-		table.insert(order, i)
-	end
-	table.sort(order, function(x, y)
-		if positions[x] ~= positions[y] then
-			return positions[x] < positions[y]
-		end
-		return x < y
-	end)
-	local laidOut = {}
-	for m, i in order do
-		local spec = specs[i]
-		local previous = specs[order[(m - 2) % #order + 1]]
-		local gap = if #order == 1 then total else (positions[order[m % #order + 1]] - positions[i]) % total
-		local taper = if previous.Lanes == spec.Lanes then 0 else math.min(taperLength, TAPER_SHARE * gap)
-		local start = positions[i]
-		local function overlapping(): { From: number, To: number }?
-			for _, mouth in mouths do
-				if (mouth.From - start) % total < taper or (start - mouth.From) % total < mouth.To - mouth.From then
-					return mouth
-				end
-			end
-			return nil
-		end
-		if taper > 0 then
-			-- Push it past the mouths in its way, the nearer way round
-			local direction, shifted = 0, 0
-			for _ = 1, 2 * #mouths + 2 do
-				local mouth = overlapping()
-				if not mouth or shifted >= total then
-					break
-				end
-				local forward = (mouth.To - start) % total
-				local backward = (start + taper - mouth.From) % total
-				if direction == 0 then
-					direction = if forward <= backward then 1 else -1
-				end
-				local step = if direction > 0 then forward else backward
-				shifted += step
-				start = (start + direction * step) % total
-			end
-		end
-		laidOut[i] = {
-			Angle = spec.Angle,
-			Lanes = spec.Lanes,
-			Side = spec.Side,
-			Previous = previous.Lanes,
-			Position = positions[i],
-			Start = start,
-			Taper = taper,
-			Clear = taper == 0 or overlapping() == nil,
-		}
-	end
-	return laidOut
-end
-
--- The circulating lanes at a ring position (fractional within a lane
--- change)
-local function ringLanesAt(sections: { any }, ringLanes: number, total: number, u: number): number
-	local best, bestDistance = nil, math.huge
-	for _, section in sections do
-		local distance = (u - section.Start) % total
-		if distance < bestDistance then
-			best, bestDistance = section, distance
-		end
-	end
-	if not best then
-		return ringLanes
-	end
-	if bestDistance < best.Taper then
-		return best.Previous + (best.Lanes - best.Previous) * smoothstep(bestDistance / best.Taper)
-	end
-	return best.Lanes
-end
-
--- The ring's width at a position round it (see Ring sections)
-function RoadMath.ringWidthAt(layout: RoundaboutLayout, position: number): number
-	return ringLanesAt(layout.Sections, layout.RingLanes, layout.RingLength, position) * layout.LaneWidth
-end
-
 function RoadMath.roundaboutLayout(model: Instance): RoundaboutLayout
 	local circles = RoadMath.parseIslandShape(model:GetAttribute("IslandShape"))
 	local lanes = math.max(math.floor(getNumberAttribute(model, "RingLanes", RoadDefaults.RoundaboutRingLanes)), 1)
 	local laneWidth = getNumberAttribute(model, "LaneWidth", RoadDefaults.LaneWidth)
 	local sidewalkWidth = math.max(getNumberAttribute(model, "SidewalkWidth", RoadDefaults.SidewalkWidth), 0)
+	local ringWidth = lanes * laneWidth
 	local armLength = math.max(getNumberAttribute(model, "ArmLength", RoadDefaults.RoundaboutArmLength), 1)
-	local splitterWidth = math.max(getNumberAttribute(model, "SplitterWidth", RoadDefaults.RoundaboutSplitterWidth), 0)
-	local kerbRadius = math.max(
-		getNumberAttribute(model, "EntryKerbRadius", RoadDefaults.RoundaboutEntryKerbRadius),
-		sidewalkWidth + 2
-	)
-	local taperLength =
-		math.max(getNumberAttribute(model, "RingTaperLength", RoadDefaults.RoundaboutRingTaperLength), 1)
 	local smallest = math.huge
 	for _, circle in circles do
 		smallest = math.min(smallest, circle.Radius)
@@ -961,70 +670,23 @@ function RoadMath.roundaboutLayout(model: Instance): RoundaboutLayout
 	local stations = RoadMath.roundaboutStations(circles)
 	local cx, cz = RoadMath.islandCentroid(circles)
 	local exitSide = if model:GetAttribute("DriveSide") == "Right" then -1 else 1
-	-- Positions round the ring run the way traffic does: with the outline's
-	-- stations driving on the left (clockwise seen from above)
-	local measure = ringMeasure(stations, laneWidth, exitSide)
-	local sectionSpecs = RoadMath.parseRingSections(model:GetAttribute("RingSections"))
-	local maxLanes = if #sectionSpecs > 0 then 1 else lanes
-	for _, section in sectionSpecs do
-		maxLanes = math.max(maxLanes, section.Lanes)
-	end
-	local ringWidth = maxLanes * laneWidth
-
+	local arms: { RoundaboutArm } = {}
 	-- No attribute at all means the generator's default arms ("" is none)
 	local armsValue = model:GetAttribute("Arms")
 	if armsValue == nil then
 		armsValue = RoadDefaults.RoundaboutArms
 	end
-	local specs = RoadMath.parseArms(armsValue)
-	-- Where each arm attaches, and the stretch of ring its mouth spans
-	local attachments = {}
-	local mouths = {}
-	for _, arm in specs do
-		local px, pz, normalX, normalZ, index, t = RoadMath.outlineHit(stations, cx, cz, math.rad(arm.Angle))
+	for _, arm in RoadMath.parseArms(armsValue) do
+		local px, pz, normalX, normalZ = RoadMath.outlineHit(stations, cx, cz, math.rad(arm.Angle))
 		-- The arm's direction: the outline normal, swung by its skew
 		local skew = math.rad(arm.Skew)
 		local nx = normalX * math.cos(skew) - normalZ * math.sin(skew)
 		local nz = normalX * math.sin(skew) + normalZ * math.cos(skew)
-		table.insert(attachments, {
-			PX = px,
-			PZ = pz,
-			NX = nx,
-			NZ = nz,
-			Skew = skew,
-			Position = ringPosition(measure, index, t),
-		})
-		local splitter = if arm.Exit > 0 and arm.Entry > 0 then splitterWidth else 0
-		local reach = splitter / 2
-			+ math.max(arm.Exit, arm.Entry + (arm.Flare or 0)) * laneWidth
-			+ kerbRadius
-			+ MOUTH_CLEARANCE
-		table.insert(mouths, mouthRange(measure, px, pz, normalX, normalZ, nx, nz, skew, ringWidth, reach))
-	end
-	local positions = {}
-	local boundaries = {}
-	for i, section in sectionSpecs do
-		local x, z, nx, nz, index, t = RoadMath.outlineHit(stations, cx, cz, math.rad(section.Angle))
-		positions[i] = ringPosition(measure, index, t)
-		boundaries[i] = { X = x, Z = z, NX = nx, NZ = nz }
-	end
-	local sections = layoutRingSections(sectionSpecs, positions, mouths, measure.Total, taperLength)
-	for i, section in sections do
-		local boundary = boundaries[i]
-		section.X, section.Z, section.NX, section.NZ = boundary.X, boundary.Z, boundary.NX, boundary.NZ
-		section.Width = ringLanesAt(sections, lanes, measure.Total, section.Position) * laneWidth
-	end
-
-	local arms: { RoundaboutArm } = {}
-	for k, arm in specs do
-		local attachment = attachments[k]
-		local px, pz, nx, nz, skew = attachment.PX, attachment.PZ, attachment.NX, attachment.NZ, attachment.Skew
 		-- Looking out along the arm, +T is the left
 		local tx, tz = nz, -nx
 		-- Its mouth: where its axis crosses the ring's outer edge (taking the
-		-- outline as straight across the ring's width there)
-		local armRingWidth = ringLanesAt(sections, lanes, measure.Total, attachment.Position) * laneWidth
-		local toMouth = armRingWidth / math.cos(skew)
+		-- outline as straight across the ring's width)
+		local toMouth = ringWidth / math.cos(skew)
 		local mouthX, mouthZ = px + nx * toMouth, pz + nz * toMouth
 		-- The end is centred on its roadway: the exit lanes one side of the
 		-- arm's axis, the entry lanes the other
@@ -1039,8 +701,6 @@ function RoadMath.roundaboutLayout(model: Instance): RoundaboutLayout
 			Skew = arm.Skew,
 			Flare = arm.Flare or 0,
 			Arrows = arm.Arrows or "",
-			RingWidth = armRingWidth,
-			Position = attachment.Position,
 			AttachX = px,
 			AttachZ = pz,
 			NX = nx,
@@ -1064,14 +724,14 @@ function RoadMath.roundaboutLayout(model: Instance): RoundaboutLayout
 			0,
 			math.max(smallest - 1, 0)
 		),
-		Sections = sections,
-		RingLength = measure.Total,
-		RingTaperLength = taperLength,
 		Arms = arms,
 		ArmLength = armLength,
-		SplitterWidth = splitterWidth,
+		SplitterWidth = math.max(getNumberAttribute(model, "SplitterWidth", RoadDefaults.RoundaboutSplitterWidth), 0),
 		SplitterStyle = if model:GetAttribute("SplitterStyle") == "Hatched" then "Hatched" else "Kerbed",
-		EntryKerbRadius = kerbRadius,
+		EntryKerbRadius = math.max(
+			getNumberAttribute(model, "EntryKerbRadius", RoadDefaults.RoundaboutEntryKerbRadius),
+			sidewalkWidth + 2
+		),
 		FlareLength = math.max(getNumberAttribute(model, "FlareLength", RoadDefaults.RoundaboutFlareLength), 1),
 	}
 end

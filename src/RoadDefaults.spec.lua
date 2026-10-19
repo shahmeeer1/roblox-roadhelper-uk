@@ -34,9 +34,6 @@ return function(t: TestTypes.TestContext)
 		t.expect(attributes.SplitterWidth).toBe(RoadDefaults.RoundaboutSplitterWidth)
 		t.expect(attributes.EntryKerbRadius).toBe(RoadDefaults.RoundaboutEntryKerbRadius)
 		t.expect(attributes.FlareLength).toBe(RoadDefaults.RoundaboutFlareLength)
-		t.expect(attributes.RingTaperLength).toBe(RoadDefaults.RoundaboutRingTaperLength)
-		-- No sections: RingLanes all the way round
-		t.expect(attributes.RingSections).toBe("")
 		-- RoadMath reads anything but "Hatched" as kerbed
 		t.expect(attributes.SplitterStyle).toBe("Kerbed")
 		local island = RoadMath.parseIslandShape(attributes.IslandShape)

@@ -159,21 +159,8 @@ lazy-loads `src/main.lua` on first activation.
   `SplitterStyle` "Kerbed" (default) or "Hatched" (painted only). The Roundabout add cone
   builds a 4-arm roundabout whose `Arm3` joins the road end (arms carry the road's lanes).
   Removing an arm renumbers later ones, so joined roads are remapped, not re-seated by old id.
-- Roundabout ring sections (`RingSections`, `"angle,lanes[,In];..."`, none = `RingLanes` all
-  round): each boundary (where the ray from the centroid meets the outline) sets the lanes
-  from there on in the direction of travel. The ring's real width follows: the outer edge eases
-  over `RingTaperLength` after a boundary (at most 80% of the way to the next), and `In`/`Out`
-  (default) only says which side the lane appears or ends on, for the markings. Positions round
-  the ring are distances along the outline offset by one lane width, in the direction of
-  travel (station order when driving on the left, the reverse on the right). A lane change may
-  not overlap an arm's mouth (the kerb fillets need a steady width): it's pushed clear,
-  whichever way is nearer (`Clear` false if impossible). Each arm reads the width at its own
-  position (`arm.RingWidth`), so arm ends move when sections change; `layout.RingWidth` is
-  the widest. All of it (`ringMeasure`, `mouthRange`, `layoutRingSections`, `ringLanesAt`)
-  is mirrored exactly in the generator, which adds stations through each lane change; edges
-  "beyond the outer edge" are `{ Outer = x }` offsets there. Boundary knobs in
-  `IslandShapeHandles` select (`selectedSection`) and drag them.
-- Roundabout ring markings (`RingMarkings`): "Concentric" (default) or "Spiral". Spiral
+- Roundabout ring markings (`RingMarkings`): "Concentric" (default), "Spiral" or "None" (to
+  draw your own: see Drawn markings). Spiral
   stretches run from the end of one exit arm's mouth (its entry-side kerb) to the end of the
   next's; over a stretch line k sweeps out by that exit's lanes (capped at ring lanes - 1),
   so the line between continuing and leaving lanes ends at the exit's nose (lat

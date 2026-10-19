@@ -22,15 +22,9 @@ local defaultAttributes = {
 	-- The circulating carriageway: lanes, and each lane's width
 	RingLanes = 2,
 	LaneWidth = 24,
-	-- Where the ring's lane count changes, "angle,lanes[,side];...": from the
-	-- boundary at this angle around the island's centroid on (in the
-	-- direction of travel), the ring has this many lanes, the extra or
-	-- dropped lanes on its "Out"side or "In"side ("" for RingLanes all the
-	-- way round), changing over RingTaperLength
-	RingSections = "",
-	RingTaperLength = 60,
-	-- How the ring's lane lines run: "Concentric" (round the island) or
-	-- "Spiral" (each sweeping out to the next exit, so a lane leads off it)
+	-- How the ring's lane lines run: "Concentric" (round the island),
+	-- "Spiral" (each sweeping out to the next exit, so a lane leads off it),
+	-- or "None" (for drawing your own)
 	RingMarkings = "Concentric",
 	-- The arms, "angle,exit,entry[,length,skew,flare,arrows];...": the
 	-- direction from the island's centroid in degrees (atan2(z, x)), lanes
@@ -321,13 +315,11 @@ local function hullOfCircles(circles)
 	return pieces
 end
 
--- Where the ray from (cx, cz) at an angle leaves the outline, the outward
--- normal there, and the station segment it's on (identical to
--- RoadMath.outlineHit)
+-- Where the ray from (cx, cz) at an angle leaves the outline, and the
+-- outward normal there (identical to RoadMath.outlineHit)
 local function outlineHit(stations, cx, cz, angle)
 	local dx, dz = math.cos(angle), math.sin(angle)
 	local bestT, hitX, hitZ, hitNX, hitNZ = math.huge, cx, cz, dx, dz
-	local hitIndex, hitS = 1, 0
 	for i = 1, #stations do
 		local a, b = stations[i], stations[i % #stations + 1]
 		local ex, ez = b.PX - a.PX, b.PZ - a.PZ
@@ -342,44 +334,15 @@ local function outlineHit(stations, cx, cz, angle)
 				local nx, nz = a.NX + (b.NX - a.NX) * s, a.NZ + (b.NZ - a.NZ) * s
 				local length = math.sqrt(nx * nx + nz * nz)
 				hitNX, hitNZ = nx / length, nz / length
-				hitIndex, hitS = i, math.clamp(s, 0, 1)
 			end
 		end
 	end
-	return hitX, hitZ, hitNX, hitNZ, hitIndex, hitS
+	return hitX, hitZ, hitNX, hitNZ
 end
 
---[[
-	Ring sections (identical to RoadMath's Ring sections): boundaries set the
-	ring's lanes from there on in the direction of travel, changing over a
-	taper kept clear of the arms' mouths. Positions round the ring are
-	distances along the outline offset by a lane width, in the direction of
-	travel, from the first station.
-]]
-local MAX_RING_SECTIONS = 12
-local MOUTH_CLEARANCE = 4
-local TAPER_SHARE = 0.8
--- Stations added through each lane change
-local SECTION_TAPER_STEPS = 12
-
-local function parseRingSections(value)
-	local sections = {}
-	if typeof(value) == "string" then
-		for _, entry in string.split(value, ";") do
-			local parts = string.split(entry, ",")
-			local angle, lanes = tonumber(parts[1]), tonumber(parts[2])
-			if angle and lanes and #sections < MAX_RING_SECTIONS then
-				table.insert(sections, {
-					Angle = angle,
-					Lanes = math.max(math.floor(lanes), 1),
-					Side = if parts[3] == "In" then "In" else "Out",
-				})
-			end
-		end
-	end
-	return sections
-end
-
+-- Positions round the ring (for spiral markings): distances along the
+-- outline offset by `reference`, in the direction of travel (`direction` 1:
+-- station order; -1: against it), from the first station
 local function ringMeasure(stations, reference, direction)
 	local count = #stations
 	local cumulative, lengths = {}, {}
@@ -427,103 +390,6 @@ local function ringPositionOf(measure, x, z)
 	return ringPosition(measure, bestI, bestT)
 end
 
-local function mouthRange(measure, px, pz, normalX, normalZ, nx, nz, skew, ringWidth, reach)
-	local cosine = math.cos(skew)
-	local mx, mz = px + nx * ringWidth / cosine, pz + nz * ringWidth / cosine
-	local tx, tz = -normalZ, normalX
-	local along = reach / cosine
-	local total = measure.Total
-	local centre = ringPositionOf(measure, mx, mz)
-	local low, high = 0, 0
-	for _, sign in { -1, 1 } do
-		local u = ringPositionOf(measure, mx + tx * along * sign, mz + tz * along * sign)
-		local offset = (u - centre + total / 2) % total - total / 2
-		low, high = math.min(low, offset), math.max(high, offset)
-	end
-	return { From = centre + low, To = centre + high }
-end
-
-local function layoutRingSections(specs, positions, mouths, total, taperLength)
-	local order = {}
-	for i in specs do
-		table.insert(order, i)
-	end
-	table.sort(order, function(x, y)
-		if positions[x] ~= positions[y] then
-			return positions[x] < positions[y]
-		end
-		return x < y
-	end)
-	local laidOut = {}
-	for m, i in order do
-		local spec = specs[i]
-		local previous = specs[order[(m - 2) % #order + 1]]
-		local gap = if #order == 1 then total else (positions[order[m % #order + 1]] - positions[i]) % total
-		local taper = if previous.Lanes == spec.Lanes then 0 else math.min(taperLength, TAPER_SHARE * gap)
-		local start = positions[i]
-		local function overlapping()
-			for _, mouth in mouths do
-				if (mouth.From - start) % total < taper or (start - mouth.From) % total < mouth.To - mouth.From then
-					return mouth
-				end
-			end
-			return nil
-		end
-		if taper > 0 then
-			local direction, shifted = 0, 0
-			for _ = 1, 2 * #mouths + 2 do
-				local mouth = overlapping()
-				if not mouth or shifted >= total then
-					break
-				end
-				local forward = (mouth.To - start) % total
-				local backward = (start + taper - mouth.From) % total
-				if direction == 0 then
-					direction = if forward <= backward then 1 else -1
-				end
-				local step = if direction > 0 then forward else backward
-				shifted += step
-				start = (start + direction * step) % total
-			end
-		end
-		laidOut[i] = {
-			Angle = spec.Angle,
-			Lanes = spec.Lanes,
-			Side = spec.Side,
-			Previous = previous.Lanes,
-			Position = positions[i],
-			Start = start,
-			Taper = taper,
-			Clear = taper == 0 or overlapping() == nil,
-		}
-	end
-	return laidOut
-end
-
--- The section a ring position is in (the one whose lane change most
--- recently started), and how far past that start it is
-local function sectionAt(sections, total, u)
-	local best, bestDistance = nil, math.huge
-	for _, section in sections do
-		local distance = (u - section.Start) % total
-		if distance < bestDistance then
-			best, bestDistance = section, distance
-		end
-	end
-	return best, bestDistance
-end
-
-local function ringLanesAt(sections, ringLanes, total, u)
-	local best, bestDistance = sectionAt(sections, total, u)
-	if not best then
-		return ringLanes
-	end
-	if bestDistance < best.Taper then
-		return best.Previous + (best.Lanes - best.Previous) * smoothstep(bestDistance / best.Taper)
-	end
-	return best.Lanes
-end
-
 --[[
 	The roundabout is drawn from "stations" around the island outline: points
 	on it (P) with the outward normal there (N). The tangent edges between
@@ -566,16 +432,16 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 		local kerbRadius = math.max(attributes.EntryKerbRadius or 24, sidewalkWidth + 2)
 		local flareLength = math.max(attributes.FlareLength or 90, 1)
 		local splitterWidth = math.max(attributes.SplitterWidth or 16, 0)
-		local taperLength = math.max(attributes.RingTaperLength or 60, 1)
+		local ringWidth = ringLanes * laneWidth
 
-		local outline = {}
+		local stations = {}
 		for _, piece in hullOfCircles(circles) do
 			local circle = piece.Circle
 			local steps = math.max(math.ceil((piece.To - piece.From) / ARC_STEP), 1)
 			for k = 0, steps do
 				local angle = piece.From + (piece.To - piece.From) * k / steps
 				local nx, nz = math.cos(angle), math.sin(angle)
-				table.insert(outline, {
+				table.insert(stations, {
 					PX = circle.X + nx * circle.Radius,
 					PZ = circle.Z + nz * circle.Radius,
 					NX = nx,
@@ -584,104 +450,13 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 			end
 		end
 
-		--[[
-			The ring's sections and the arms' attachments, laid out on the
-			outline's stations exactly as RoadMath.roundaboutLayout does
-		--]]
-		local measure = ringMeasure(outline, laneWidth, exitSide)
+		-- Each station's position round the ring (U), for spiral markings,
+		-- and the distance along the outline (S, in station order)
+		local measure = ringMeasure(stations, laneWidth, exitSide)
 		local total = measure.Total
-		local sectionSpecs = parseRingSections(attributes.RingSections)
-		local maxLanes = if #sectionSpecs > 0 then 1 else ringLanes
-		for _, section in sectionSpecs do
-			maxLanes = math.max(maxLanes, section.Lanes)
-		end
-		local maxRingWidth = maxLanes * laneWidth
-		-- (No attribute at all means the default arms; "" is none)
-		local armSpecs = parseArms(if attributes.Arms == nil then defaultAttributes.Arms else attributes.Arms)
-		local attachments = {}
-		local mouths = {}
-		for _, spec in armSpecs do
-			local px, pz, normalX, normalZ, index, t = outlineHit(outline, cx, cz, math.rad(spec.Angle))
-			-- The arm's direction: the outline normal swung by its skew
-			local skew = math.rad(spec.Skew)
-			local nx = normalX * math.cos(skew) - normalZ * math.sin(skew)
-			local nz = normalX * math.sin(skew) + normalZ * math.cos(skew)
-			table.insert(attachments, {
-				PX = px,
-				PZ = pz,
-				NX = nx,
-				NZ = nz,
-				Skew = skew,
-				Position = ringPosition(measure, index, t),
-			})
-			local splitter = if spec.Exit > 0 and spec.Entry > 0 then splitterWidth else 0
-			local reach = splitter / 2
-				+ math.max(spec.Exit, spec.Entry + spec.Flare) * laneWidth
-				+ kerbRadius
-				+ MOUTH_CLEARANCE
-			table.insert(mouths, mouthRange(measure, px, pz, normalX, normalZ, nx, nz, skew, maxRingWidth, reach))
-		end
-		local positions = {}
-		for i, section in sectionSpecs do
-			local _, _, _, _, index, t = outlineHit(outline, cx, cz, math.rad(section.Angle))
-			positions[i] = ringPosition(measure, index, t)
-		end
-		local sections = layoutRingSections(sectionSpecs, positions, mouths, total, taperLength)
-		local function widthAt(u)
-			return ringLanesAt(sections, ringLanes, total, u) * laneWidth
-		end
-
-		-- The stations everything is built on: the outline's, plus more
-		-- through each lane change so the ring's edge eases smoothly. Each
-		-- knows its position round the ring (U), the distance along the
-		-- outline (S, in station order) and the ring's width there (W). The
-		-- added stations lie on the straight runs between the outline's
-		-- (their normals blended the same way), so the outline is unchanged.
-		local added = {}
-		for _, section in sections do
-			if section.Taper > 0 then
-				for k = 0, SECTION_TAPER_STEPS do
-					local u = (section.Start + section.Taper * k / SECTION_TAPER_STEPS) % total
-					local s = if exitSide > 0 then u else (total - u) % total
-					local i = 1
-					while i < #outline and measure.Cumulative[i + 1] <= s do
-						i += 1
-					end
-					local t = if measure.Lengths[i] > 1e-9 then (s - measure.Cumulative[i]) / measure.Lengths[i] else 0
-					if t > 1e-6 and t < 1 - 1e-6 then
-						added[i] = added[i] or {}
-						table.insert(added[i], t)
-					end
-				end
-			end
-		end
-		local stations = {}
-		for i, station in outline do
+		for i, station in stations do
 			station.U = ringPosition(measure, i, 0)
 			station.S = measure.Cumulative[i]
-			table.insert(stations, station)
-			local ts = added[i]
-			if ts then
-				table.sort(ts)
-				local nextStation = outline[i % #outline + 1]
-				local last = 0
-				for _, t in ts do
-					if t - last > 1e-6 then
-						table.insert(stations, {
-							PX = station.PX + (nextStation.PX - station.PX) * t,
-							PZ = station.PZ + (nextStation.PZ - station.PZ) * t,
-							NX = station.NX + (nextStation.NX - station.NX) * t,
-							NZ = station.NZ + (nextStation.NZ - station.NZ) * t,
-							U = ringPosition(measure, i, t),
-							S = measure.Cumulative[i] + measure.Lengths[i] * t,
-						})
-						last = t
-					end
-				end
-			end
-		end
-		for _, station in stations do
-			station.W = widthAt(station.U)
 		end
 		local count = #stations
 		local function point(station, d, h)
@@ -693,15 +468,6 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 			local px, pz = a.PX + (b.PX - a.PX) * t, a.PZ + (b.PZ - a.PZ) * t
 			local nx, nz = a.NX + (b.NX - a.NX) * t, a.NZ + (b.NZ - a.NZ) * t
 			return Vector3.new(px + nx * d, bottom + h, pz + nz * d)
-		end
-		-- An offset from the outline part way (t) between stations a and b:
-		-- a number, or { Outer = x } for x beyond the ring's outer edge
-		-- (which moves with its lane count)
-		local function offsetAt(d, a, b, t)
-			if type(d) == "table" then
-				return a.W + (b.W - a.W) * t + d.Outer
-			end
-			return d
 		end
 
 		local hRoadTop = ROAD_THICKNESS
@@ -779,16 +545,18 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 			Arms
 		--]]
 		local arms = {}
-		for k, spec in armSpecs do
-			-- The arm starts at its mouth, where its axis crosses the ring's
-			-- outer edge (identical to RoadMath.roundaboutLayout)
-			local attachment = attachments[k]
-			local px, pz, nx, nz, skew = attachment.PX, attachment.PZ, attachment.NX, attachment.NZ, attachment.Skew
-			local ringWidth = widthAt(attachment.Position)
+		-- (No attribute at all means the default arms; "" is none)
+		for _, spec in parseArms(if attributes.Arms == nil then defaultAttributes.Arms else attributes.Arms) do
+			local px, pz, normalX, normalZ = outlineHit(stations, cx, cz, math.rad(spec.Angle))
+			-- The arm's direction: the outline normal swung by its skew; it
+			-- starts at its mouth, where that axis crosses the ring's outer
+			-- edge (identical to RoadMath.roundaboutLayout)
+			local skew = math.rad(spec.Skew)
+			local nx = normalX * math.cos(skew) - normalZ * math.sin(skew)
+			local nz = normalX * math.sin(skew) + normalZ * math.cos(skew)
 			local toMouth = ringWidth / math.cos(skew)
 			local length = if spec.Length > 0 then spec.Length else armLength
 			local arm = {
-				RingWidth = ringWidth,
 				Exit = spec.Exit,
 				Entry = spec.Entry,
 				NX = nx,
@@ -850,7 +618,7 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 			local best = nil
 			for i = 1, count do
 				local a, b = stations[i], stations[i % count + 1]
-				local qa, qb = point(a, a.W + beyond, 0), point(b, b.W + beyond, 0)
+				local qa, qb = point(a, ringWidth + beyond, 0), point(b, ringWidth + beyond, 0)
 				local la, lb = lateralOf(arm, qa) - lat, lateralOf(arm, qb) - lat
 				if la * lb <= 0 and la ~= lb then
 					local t = la / (la - lb)
@@ -885,10 +653,8 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 		--   ring's outer edge from within (centre on that edge offset in by
 		--   the radius) and to the side from within (the line radius inside
 		--   the arm's side). The road is inside the circle.
-		-- (Lane changes round the ring are kept clear of the mouths, so the
-		-- ring's outer edge is an exact offset of the outline here.)
+		local convexRadius = math.min(kerbRadius, ringWidth + smallest - 1)
 		for _, arm in arms do
-			local convexRadius = math.min(kerbRadius, arm.RingWidth + smallest - 1)
 			arm.Fillets = {}
 			-- The fillet tangent to the straight line `half` out on one side
 			local function filletFor(side, half)
@@ -964,7 +730,7 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 		-- The parts of the outline between stations a and b (t from 0 to 1)
 		-- outside every arm's mouth, judged at the ring's outer edge
 		local function visiblePieces(a, b)
-			local qa, qb = point(a, a.W, 0), point(b, b.W, 0)
+			local qa, qb = point(a, ringWidth, 0), point(b, ringWidth, 0)
 			local pieces = { { 0, 1 } }
 			for _, arm in arms do
 				local la, lb = lateralOf(arm, qa), lateralOf(arm, qb)
@@ -1006,10 +772,10 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 			return pieces
 		end
 
-		-- The band between offsets d0 and d1 (see offsetAt) all the way round,
-		-- at height h (cut at the arms' mouths when `cut`)
+		-- The band between offsets d0 and d1 all the way round, at height h
+		-- (cut at the arms' mouths when `cut`)
 		local function band(d0, d1, h, color, material, mVariant, thickness, cut)
-			if type(d0) == "number" and type(d1) == "number" and d1 - d0 < 0.01 then
+			if d1 - d0 < 0.01 then
 				return
 			end
 			for i = 1, count do
@@ -1020,8 +786,7 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 					for _, piece in (if cut then visiblePieces(a, b) else { { 0, 1 } }) do
 						local t0, t1 = piece[1], piece[2]
 						if t1 - t0 > 1e-4 then
-							quad(between(a, b, t0, offsetAt(d0, a, b, t0), h), between(a, b, t0, offsetAt(d1, a, b, t0), h),
-								between(a, b, t1, offsetAt(d1, a, b, t1), h), between(a, b, t1, offsetAt(d0, a, b, t1), h),
+							quad(between(a, b, t0, d0, h), between(a, b, t0, d1, h), between(a, b, t1, d1, h), between(a, b, t1, d0, h),
 								color, material, mVariant, thickness)
 						end
 					end
@@ -1030,10 +795,10 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 		end
 
 		-- The circulating carriageway, with road surface under the footway
-		band(0, { Outer = sidewalkWidth }, hRoadTop, roadColor, roadMaterial, roadMaterialVariant, ROAD_THICKNESS, false)
+		band(0, ringWidth + sidewalkWidth, hRoadTop, roadColor, roadMaterial, roadMaterialVariant, ROAD_THICKNESS, false)
 		-- The footway around the outside, cut where arms join
 		if sidewalkWidth > 0 then
-			band({ Outer = 0 }, { Outer = sidewalkWidth }, hSideTop, sidewalkColor, SIDEWALK_MATERIAL, "", CURB_HEIGHT, true)
+			band(ringWidth, ringWidth + sidewalkWidth, hSideTop, sidewalkColor, SIDEWALK_MATERIAL, "", CURB_HEIGHT, true)
 		end
 		-- The apron: a low raised band just inside the ring
 		band(-apronWidth, 0, ROAD_THICKNESS + APRON_RISE, attributes.ApronColor, attributes.ApronMaterial, "",
@@ -1245,46 +1010,25 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 				part.Parent = targetContainer
 			end
 			local markHeight = hRoadTop + 0.05
-			-- A line around the ring at offset d (see offsetAt; cut at the
-			-- arms' mouths when `cut`)
+			-- A line around the ring at offset d (cut at the arms' mouths
+			-- when `cut`)
 			local function ringLine(d, dotted, cut)
 				local travelled = 0.3125 * DOTTED_MARK_TILE_LENGTH
 				for i = 1, count do
 					local a, b = stations[i], stations[i % count + 1]
 					for _, piece in (if cut then visiblePieces(a, b) else { { 0, 1 } }) do
-						local pa = between(a, b, piece[1], offsetAt(d, a, b, piece[1]), markHeight)
-						local pb = between(a, b, piece[2], offsetAt(d, a, b, piece[2]), markHeight)
+						local pa = between(a, b, piece[1], d, markHeight)
+						local pb = between(a, b, piece[2], d, markHeight)
 						strip(pa, pb, laneColor, MARK_WIDTH, dotted, travelled)
 					end
-					travelled += (point(b, offsetAt(d, a, b, 1), 0) - point(a, offsetAt(d, a, b, 0), 0)).Magnitude
+					travelled += (point(b, d, 0) - point(a, d, 0)).Magnitude
 				end
 			end
-			-- The lane lines between the circulating lanes at a station, keyed
-			-- by line, in a section (nil for none) or its lane change. Within a
-			-- section they're a lane apart out from the island. Through a lane
-			-- change they keep their distance from the side the change isn't
-			-- on (the island for an "Out" change, the outer edge for "In"), and
-			-- the lines of the lanes it adds or drops run only where those are
-			-- at least half a lane wide.
-			local function laneLinesAt(section, changing, station)
-				local lines = {}
-				if not section or not changing then
-					local lanes = if section then section.Lanes else ringLanes
-					for k = 1, lanes - 1 do
-						lines[k] = k * laneWidth
-					end
-					return lines
-				end
-				local fewer = math.min(section.Previous, section.Lanes)
-				local more = math.max(section.Previous, section.Lanes)
-				for k = 1, more - 1 do
-					local d = if section.Side == "In" then station.W - k * laneWidth else k * laneWidth
-					local room = if section.Side == "In" then d else station.W - d
-					if k < fewer or room >= laneWidth / 2 - 1e-6 then
-						lines[k] = d
-					end
-				end
-				return lines
+			-- The lane lines between the circulating lanes, keyed by line,
+			-- where they'd be concentric: a lane apart out from the island
+			local laneLines = {}
+			for k = 1, ringLanes - 1 do
+				laneLines[k] = k * laneWidth
 			end
 			--[[
 				Spiral markings: the ring is divided into stretches, one per arm
@@ -1319,7 +1063,7 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 								Targets = targets,
 								Nose = targets[0],
 								Finish = finish,
-								Lanes = math.round(widthAt(targets[0]) / laneWidth),
+								Lanes = ringLanes,
 							})
 						end
 					end
@@ -1338,7 +1082,7 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 			-- Where lane line k is at a station `progress` into a stretch, from
 			-- where it would be concentric (`base`); nil once it's left the
 			-- ring, with how far into the stretch it does
-			local function spiralOffset(stretch, k, base, progress, station)
+			local function spiralOffset(stretch, k, base, progress)
 				local exits = math.min(stretch.Arm.Exit, stretch.Lanes - 1)
 				local leaving = k + exits - stretch.Lanes
 				local length, target
@@ -1348,7 +1092,7 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 					if progress > length then
 						return nil, length
 					end
-					target = station.W
+					target = ringWidth
 				else
 					length = math.max((stretch.Nose - stretch.Start) % total, 1e-3)
 					target = (k + exits) * laneWidth
@@ -1362,14 +1106,10 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 				local travelled, lastEnds = {}, {}
 				for i = 1, count do
 					local a, b = stations[i], stations[i % count + 1]
-					-- Which section this stretch is in, judged at its middle
+					-- Which spiral stretch this piece is in (judged at its
+					-- middle), if any, and how far into it each end is
 					local middle = a.S + ((b.S - a.S) % total) / 2
 					local u = if exitSide > 0 then middle else (total - middle) % total
-					local section, past = sectionAt(sections, total, u)
-					local changing = section ~= nil and past < section.Taper
-					local from, to = laneLinesAt(section, changing, a), laneLinesAt(section, changing, b)
-					-- And which spiral stretch, if any, and how far into it
-					-- each end of this piece is
 					local stretch, progress = nil, math.huge
 					for _, candidate in stretches do
 						local into = (u - candidate.Start) % total
@@ -1380,19 +1120,19 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 					local progressA = if stretch then progress + along(a.U, u) else 0
 					local progressB = if stretch then progress + along(b.U, u) else 0
 					local ends = {}
-					for k, baseA in from do
-						local baseB = to[k]
-						if baseB then
+					for k, base in laneLines do
+						local baseA, baseB = base, base
+						do
 							local da, db = baseA, baseB
 							local pb = nil
 							if stretch then
 								local length
-								da = spiralOffset(stretch, k, baseA, math.max(progressA, 0), a)
-								db, length = spiralOffset(stretch, k, baseB, math.max(progressB, 0), b)
+								da = spiralOffset(stretch, k, baseA, math.max(progressA, 0))
+								db, length = spiralOffset(stretch, k, baseB, math.max(progressB, 0))
 								if da and not db and progressB > progressA then
 									-- (Running out to the ring's edge part way along)
 									local t = math.clamp((length - progressA) / (progressB - progressA), 0, 1)
-									pb = between(a, b, t, offsetAt({ Outer = 0 }, a, b, t), markHeight)
+									pb = between(a, b, t, ringWidth, markHeight)
 								end
 							end
 							if da and (db or pb) then
@@ -1454,8 +1194,10 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 			end
 
 			ringLine(EDGE_INSET, false, false)
-			ringLine({ Outer = -EDGE_INSET }, false, true)
-			ringLaneLines()
+			ringLine(ringWidth - EDGE_INSET, false, true)
+			if attributes.RingMarkings ~= "None" then
+				ringLaneLines()
+			end
 
 			for _, arm in arms do
 				local slices = arm.Slices
@@ -1609,12 +1351,12 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 			local blendAngle = math.rad(attributes.BlendAngle or 30)
 			local cosA, sinA = math.cos(blendAngle), math.sin(blendAngle)
 			local blendTop = if sidewalkWidth > 0 then hSideTop else hRoadTop
-			local outer = { Outer = sidewalkWidth }
+			local outer = ringWidth + sidewalkWidth
 			for i = 1, count do
 				local a, b = stations[i], stations[i % count + 1]
 				for _, piece in visiblePieces(a, b) do
-					local topA = between(a, b, piece[1], offsetAt(outer, a, b, piece[1]), blendTop)
-					local topB = between(a, b, piece[2], offsetAt(outer, a, b, piece[2]), blendTop)
+					local topA = between(a, b, piece[1], outer, blendTop)
+					local topB = between(a, b, piece[2], outer, blendTop)
 					local slopeA = Vector3.new(a.NX * cosA, -sinA, a.NZ * cosA) * BLEND_LENGTH
 					local slopeB = Vector3.new(b.NX * cosA, -sinA, b.NZ * cosA) * BLEND_LENGTH
 					quad(topA, topB, topB + slopeB, topA + slopeA, attributes.BlendColor, attributes.BlendMaterial, "", BLEND_THICKNESS)

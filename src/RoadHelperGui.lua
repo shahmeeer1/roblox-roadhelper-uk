@@ -989,26 +989,6 @@ local function RoundaboutPanel(props: {
 			end,
 		})
 	end
-	local sectionSideChips: { [string]: any } = {
-		ListLayout = e("UIListLayout", {
-			FillDirection = Enum.FillDirection.Horizontal,
-			HorizontalAlignment = Enum.HorizontalAlignment.Left,
-			SortOrder = Enum.SortOrder.LayoutOrder,
-		}),
-		Corner = e("UICorner", {
-			CornerRadius = UDim.new(0, 4),
-		}),
-	}
-	for index, side in { { "Out", "Outside" }, { "In", "Inside" } } do
-		sectionSideChips[side[1]] = e(ChipForToggle, {
-			Text = side[2],
-			IsCurrent = state.SectionSide == side[1],
-			LayoutOrder = index,
-			OnClick = function()
-				props.RoundaboutAction("SectionSide", side[1])
-			end,
-		})
-	end
 	local markingChips: { [string]: any } = {
 		ListLayout = e("UIListLayout", {
 			FillDirection = Enum.FillDirection.Horizontal,
@@ -1019,7 +999,7 @@ local function RoundaboutPanel(props: {
 			CornerRadius = UDim.new(0, 4),
 		}),
 	}
-	for index, style in { "Concentric", "Spiral" } do
+	for index, style in { "Concentric", "Spiral", "None" } do
 		markingChips[style] = e(ChipForToggle, {
 			Text = style,
 			IsCurrent = state.RingMarkings == style,
@@ -1205,13 +1185,13 @@ local function RoundaboutPanel(props: {
 					}, arrowRows),
 				})
 				else nil,
-			LanesWarning = if state.ArmExit > state.ArmRingLanes
+			LanesWarning = if state.ArmExit > state.RingLanes
 				then e("TextLabel", {
 					Size = UDim2.new(1, 0, 0, 0),
 					AutomaticSize = Enum.AutomaticSize.Y,
 					BackgroundTransparency = 1,
 					TextColor3 = Colors.OFFWHITE,
-					Text = `This arm has more exit lanes than the ring has where it leaves ({state.ArmRingLanes}), so not all of them can be fed. Give the ring more lanes here with a ring section, or this arm fewer exit lanes.`,
+					Text = `This arm has more exit lanes than the ring has ({state.RingLanes}), so not all of them can be fed.`,
 					TextWrapped = true,
 					TextXAlignment = Enum.TextXAlignment.Left,
 					Font = Enum.Font.SourceSans,
@@ -1297,115 +1277,20 @@ local function RoundaboutPanel(props: {
 				LayoutOrder = 3,
 			})
 			else nil,
-		RingLanes = if state.RingSections == 0
-			then numberField(
-				"Ring Lanes",
-				"Lanes on the circulating carriageway (all one way: clockwise when driving on the left). Split the ring below to vary them on the way round.",
-				4,
-				state.RingLanes,
-				1,
-				"RingLanes"
-			)
-			else nil,
-		SectionButtons = e(HelpGui.WithHelpIcon, {
-			Help = e(HelpGui.BasicTooltip, {
-				HelpRichText = "Vary the ring's lanes on the way round. <b>Split Ring</b> adds two boundaries (orange knobs over the ring); each sets the lanes from there on in the direction of travel, up to the next. <b>Add Section</b> splits the selected section in two. The ring's outer edge follows its lanes.",
-			}),
-			LayoutOrder = 5,
-			Subject = e("Frame", {
-				Size = UDim2.new(1, 0, 0, 0),
-				AutomaticSize = Enum.AutomaticSize.Y,
-				BackgroundTransparency = 1,
-			}, {
-				ListLayout = e("UIListLayout", {
-					SortOrder = Enum.SortOrder.LayoutOrder,
-					FillDirection = Enum.FillDirection.Horizontal,
-					Padding = UDim.new(0, 4),
-				}),
-				Add = halfButton(
-					if state.RingSections == 0 then "Split Ring" else "Add Section",
-					1,
-					state.RingSections >= RoadMath.MAX_RING_SECTIONS,
-					function()
-						props.RoundaboutAction("AddSection")
-					end
-				),
-				Remove = halfButton("Remove Section", 2, state.SelectedSection == nil, function()
-					props.RoundaboutAction("RemoveSection")
-				end),
-			}),
-		}),
-		SectionHint = if state.RingSections > 0 and not state.SelectedSection
-			then e("TextLabel", {
-				Size = UDim2.new(1, 0, 0, 0),
-				AutomaticSize = Enum.AutomaticSize.Y,
-				BackgroundTransparency = 1,
-				TextColor3 = Colors.OFFWHITE,
-				Text = "Click an orange knob over the ring to select a section.",
-				TextWrapped = true,
-				TextXAlignment = Enum.TextXAlignment.Left,
-				Font = Enum.Font.SourceSans,
-				TextSize = 16,
-				LayoutOrder = 6,
-			})
-			else nil,
-		SectionLanes = if state.SelectedSection
-			then numberField(
-				`Section {state.SelectedSection} Lanes`,
-				"Lanes on the ring from the selected boundary on, in the direction of travel, up to the next boundary.",
-				7,
-				state.SectionLanes,
-				1,
-				"SectionLanes"
-			)
-			else nil,
-		SectionPosition = if state.SelectedSection
-			then numberField(
-				"Boundary Position",
-				"Where the selected section starts, as an angle around the island in degrees. You can also drag its orange knob.",
-				8,
-				state.SectionAngle,
-				-360,
-				"SectionAngle"
-			)
-			else nil,
-		SectionSide = if state.SelectedSection
-			then e(HelpGui.WithHelpIcon, {
-				Help = e(HelpGui.BasicTooltip, {
-					HelpRichText = "Which side of the ring the selected section's extra lane appears (or its dropped lane ends):"
-						.. "\n\u{2022} <b>Outside</b>: on the outer side, as when a lane is added for an exit."
-						.. "\n\u{2022} <b>Inside</b>: next to the island, as when a lane is added for turning right.",
-				}),
-				LayoutOrder = 9,
-				Subject = e("Frame", {
-					Size = UDim2.new(1, 0, 0, 0),
-					BorderSizePixel = 0,
-					BackgroundColor3 = Colors.ACTION_BLUE,
-					AutomaticSize = Enum.AutomaticSize.Y,
-				}, sectionSideChips),
-			})
-			else nil,
-		SectionWarning = if state.SelectedSection and (state.SectionMoved or not state.SectionClear)
-			then e("TextLabel", {
-				Size = UDim2.new(1, 0, 0, 0),
-				AutomaticSize = Enum.AutomaticSize.Y,
-				BackgroundTransparency = 1,
-				TextColor3 = Colors.OFFWHITE,
-				Text = if not state.SectionClear
-					then "This lane change doesn't fit between the arms' mouths, so the kerbs beside it won't meet the ring cleanly. Move the boundary or shorten the Lane Change Length."
-					else "This lane change has been moved clear of an arm's mouth, where the ring's width has to stay steady.",
-				TextWrapped = true,
-				TextXAlignment = Enum.TextXAlignment.Left,
-				Font = Enum.Font.SourceSans,
-				TextSize = 16,
-				LayoutOrder = 10,
-			})
-			else nil,
+		RingLanes = numberField(
+			"Ring Lanes",
+			"Lanes on the circulating carriageway (all one way: clockwise when driving on the left).",
+			4,
+			state.RingLanes,
+			1,
+			"RingLanes"
+		),
 		RingMarkings = e(HelpGui.WithHelpIcon, {
 			Help = e(HelpGui.BasicTooltip, {
 				HelpRichText = "How the lane lines run round the ring:"
 					.. "\n\u{2022} <b>Concentric</b>: round the island."
-					.. "\n\u{2022} <b>Spiral</b>: each line sweeps outward to the next exit, so the outer lanes lead off it and the lane line between leaving and continuing traffic runs into the exit's splitter (common on larger UK roundabouts).",
+					.. "\n\u{2022} <b>Spiral</b>: each line sweeps outward to the next exit, so the outer lanes lead off it and the lane line between leaving and continuing traffic runs into the exit's splitter (common on larger UK roundabouts)."
+					.. "\n\u{2022} <b>None</b>: no lane lines, for drawing your own with Draw Markings.",
 			}),
 			LayoutOrder = 12,
 			Subject = e("Frame", {
@@ -1415,16 +1300,6 @@ local function RoundaboutPanel(props: {
 				AutomaticSize = Enum.AutomaticSize.Y,
 			}, markingChips),
 		}),
-		RingTaperLength = if state.RingSections > 0
-			then numberField(
-				"Lane Change Length",
-				"How far round the ring each change in its lane count takes, in studs (shortened where boundaries are close together).",
-				11,
-				state.RingTaperLength,
-				1,
-				"RingTaperLength"
-			)
-			else nil,
 		LaneWidth = numberField(
 			"Lane Width",
 			"Width of each circulating lane in studs.",

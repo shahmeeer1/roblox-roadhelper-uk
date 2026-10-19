@@ -49,8 +49,6 @@ local RoadDefaults = {
 	-- How far out an arm's entry flare reaches from the ring (about 14 m):
 	-- its extra lanes run full width for the first half, then taper away
 	RoundaboutFlareLength = 90,
-	-- How long a lane change round the ring is (about 9 m)
-	RoundaboutRingTaperLength = 60,
 }
 
 -- Total road width with the default lane layout
