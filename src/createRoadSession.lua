@@ -2007,6 +2007,14 @@ local function createRoadSession(plugin: Plugin)
 	local zoneEdges = false
 	local zoneSideA: { Vector3 } = {}
 
+	-- Something changed that the viewport shows (the line being drawn, the
+	-- selection): redraw it as well as the panel. (During a press this waits
+	-- for EndPress, which nudges the dragger itself.)
+	local function markingRefresh()
+		updateDragger()
+		changeSignal:Fire()
+	end
+
 	-- The selected line, if it still exists (undo can remove it)
 	local function getSelectedLine(): Model?
 		local line = selectedLine
@@ -2025,7 +2033,7 @@ local function createRoadSession(plugin: Plugin)
 			return
 		end
 		selectedLine, selectedPoint = line, point
-		changeSignal:Fire()
+		markingRefresh()
 	end
 
 	local function startDraft(position: Vector3, surface: Instance)
@@ -2037,14 +2045,14 @@ local function createRoadSession(plugin: Plugin)
 		end
 		draft = { position }
 		selectedLine, selectedPoint = nil, nil
-		changeSignal:Fire()
+		markingRefresh()
 	end
 
 	local function cancelDraft()
 		draft = {}
 		draftParent = nil
 		zoneSideA = {}
-		changeSignal:Fire()
+		markingRefresh()
 	end
 
 	-- Where drawn lines go: the road they were started on, or a folder
@@ -2071,7 +2079,7 @@ local function createRoadSession(plugin: Plugin)
 		if #zoneSideA == 0 then
 			zoneSideA = draft
 			draft = {}
-			changeSignal:Fire()
+			markingRefresh()
 			return
 		end
 		local lines = Markings.laneZoneLines(zoneSideA, draft, zoneLanes, zoneEdges, markingDefaults.Curved)
@@ -2090,7 +2098,7 @@ local function createRoadSession(plugin: Plugin)
 			end
 			finishRecording()
 		end
-		changeSignal:Fire()
+		markingRefresh()
 	end
 
 	local function finishDraft()
@@ -2109,7 +2117,7 @@ local function createRoadSession(plugin: Plugin)
 		beginRecording("Draw Marking")
 		Markings.create(markingParent(parent), points, table.clone(markingDefaults))
 		finishRecording()
-		changeSignal:Fire()
+		markingRefresh()
 	end
 
 	local function setMarkingMode(on: boolean)
@@ -2162,7 +2170,7 @@ local function createRoadSession(plugin: Plugin)
 		StartDraft = startDraft,
 		AddDraftPoint = function(position: Vector3)
 			table.insert(draft, position)
-			changeSignal:Fire()
+			markingRefresh()
 		end,
 		FinishDraft = finishDraft,
 		CancelDraft = cancelDraft,
@@ -2223,7 +2231,7 @@ local function createRoadSession(plugin: Plugin)
 			elseif #draft == 0 then
 				draftParent = nil
 			end
-			changeSignal:Fire()
+			markingRefresh()
 			return
 		elseif action == "Tool" then
 			local tool: "Line" | "Zone" = if value == "Zone" then "Zone" else "Line"
@@ -2233,15 +2241,15 @@ local function createRoadSession(plugin: Plugin)
 				selectedLine, selectedPoint = nil, nil
 				updateDragger()
 			end
-			changeSignal:Fire()
+			markingRefresh()
 			return
 		elseif action == "ZoneLanes" then
 			zoneLanes = math.clamp(math.round(value), 1, 12)
-			changeSignal:Fire()
+			markingRefresh()
 			return
 		elseif action == "ZoneEdges" then
 			zoneEdges = value == true
-			changeSignal:Fire()
+			markingRefresh()
 			return
 		elseif action == "Deselect" then
 			selectLine(nil, nil)
@@ -2264,7 +2272,7 @@ local function createRoadSession(plugin: Plugin)
 		end
 		local line = getSelectedLine()
 		if not line then
-			changeSignal:Fire()
+			markingRefresh()
 			return
 		end
 		if action == "Delete" then
@@ -2295,7 +2303,7 @@ local function createRoadSession(plugin: Plugin)
 			Markings.build(line)
 			finishRecording()
 		end
-		changeSignal:Fire()
+		markingRefresh()
 	end
 
 	local function getMarkingState(): MarkingState
