@@ -68,9 +68,12 @@ lazy-loads `src/main.lua` on first activation.
     and angle rings).
   - `AddHandles.lua` — left/straight/right/intersection append handles on open endpoints.
   - `DeleteExitHandles.lua` — 4-way ↔ T junction exit toggles.
+  - `MarkingHandles.lua` — drawing and editing hand-drawn markings (Draw Markings mode).
 - `src/Dragger/` — handle view components (arrows/partial arcs) carried over from Redupe.
 - `src/RoadHelperGui.lua` + `src/PluginGui/` — React settings panel and reusable components.
 - `src/Presets.lua` — appearance presets applied by the panel's Add buttons.
+- `src/Markings.lua` — hand-drawn markings: line data, curve sampling, building strips,
+  snapping.
 - `src/Settings.lua` — persisted plugin settings (saved on plugin unload).
 - `src/Templates/` — packaged copies of the generators, used as a fallback when the place has
   no segment of the needed kind. Note that adds normally clone an existing segment *including
@@ -160,13 +163,25 @@ lazy-loads `src/main.lua` on first activation.
   builds a 4-arm roundabout whose `Arm3` joins the road end (arms carry the road's lanes).
   Removing an arm renumbers later ones, so joined roads are remapped, not re-seated by old id.
 - Roundabout ring markings (`RingMarkings`): "Concentric" (default), "Spiral" or "None" (to
-  draw your own: see Drawn markings). Spiral
-  stretches run from the end of one exit arm's mouth (its entry-side kerb) to the end of the
+  draw your own: see Drawn markings). Spiral stretches run from the end of one exit arm's mouth (its entry-side kerb) to the end of the
   next's; over a stretch line k sweeps out by that exit's lanes (capped at ring lanes - 1),
   so the line between continuing and leaving lanes ends at the exit's nose (lat
   `exitSide*Splitter/2` at the ring edge) and lines between leaving lanes meet the exit's own
   lane lines there. The exit side of an arm is its upstream side round the ring. Markings
   only: nothing in RoadMath depends on it.
+- Drawn markings (`Markings`): each line is a Model tagged `RoadHelperMarking`, parented to the
+  road it was started on (else a workspace `RoadMarkings` folder), with attributes `Points`
+  (`"x,y,z;..."` relative to the road's pivot, so it moves with the road; world space off a
+  road), `Style` (Dashed/Solid/GiveWay/Double), `Colour` (White/Yellow = the road's
+  LaneMarkingColor/CenterlineColor), `Curved` (centripetal Catmull-Rom), `Width`, `Dash`,
+  `Gap`. Its `MarkingStrip` parts are rebuilt from those (`Markings.build`) and are
+  CanQuery/CanCollide false, so raycasts, joint queries and snapping never see them. They're
+  deliberately not generator geometry: reshaping a road leaves them to be adjusted by hand.
+  Roads cloned as templates are stripped of them (`cloneTemplate`). In Draw Markings mode
+  every other handle is wrapped by `hiddenWhileMarking`; `MarkingHandles` act on mouse-up
+  and hold `gestureActive` for the whole press, because a dragger nudge mid-click re-runs
+  mouseUp/mouseDown. Points snap to the ends of generated `RoadMarking` strips and drawn
+  lines' points, else onto generated strips (Alt places freely).
 - The Adjust dir/grade/bank rotations all pivot about the endpoint centre point, so endpoint
   *positions* are invariant under angle edits — only move edits Size/pivot.
 - Joints are purely spatial: two ends within `RoadMath.JOINT_TOLERANCE` facing opposite ways.
