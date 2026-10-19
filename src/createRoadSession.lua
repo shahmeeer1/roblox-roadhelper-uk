@@ -100,6 +100,12 @@ export type SelectionState = {
 	ArmAngle: number?,
 	ArmOwnLength: number?,
 	ArmSkew: number?,
+	ArmFlare: number?,
+	-- The selected arm's entry lanes' arrows, left to right, and whether
+	-- they're automatic
+	ArmArrows: { string }?,
+	ArmArrowsAuto: boolean?,
+	FlareLength: number?,
 	SplitterStyle: string?,
 	LaneWidth: number,
 	SidewalkWidth: number,
@@ -243,6 +249,7 @@ local GEOMETRY_ATTRIBUTES = {
 	ArmLength = true,
 	SplitterWidth = true,
 	EntryKerbRadius = true,
+	FlareLength = true,
 	ApronWidth = true,
 	ApronMaterial = true,
 	ApronColor = true,
@@ -1677,6 +1684,8 @@ local function createRoadSession(plugin: Plugin)
 				Entry = arm.Entry,
 				Length = arm.LengthOverride,
 				Skew = arm.Skew,
+				Flare = arm.Flare,
+				Arrows = arm.Arrows,
 			})
 		end
 		return specs
@@ -1786,7 +1795,7 @@ local function createRoadSession(plugin: Plugin)
 					end
 				end
 			end
-			table.insert(specs, { Angle = angle, Exit = 1, Entry = 1, Length = 0, Skew = 0 })
+			table.insert(specs, { Angle = angle, Exit = 1, Entry = 1, Length = 0, Skew = 0, Flare = 0, Arrows = "" })
 			model:SetAttribute("Arms", RoadMath.serializeArms(specs))
 			fitRoundaboutSize(model)
 			-- Select the new arm
@@ -1834,6 +1843,32 @@ local function createRoadSession(plugin: Plugin)
 			specs[armIndex].Skew = math.clamp(value, -RoadMath.MAX_ARM_SKEW, RoadMath.MAX_ARM_SKEW)
 			model:SetAttribute("Arms", RoadMath.serializeArms(specs))
 			fitRoundaboutSize(model)
+		elseif action == "ArmFlare" and armIndex then
+			specs[armIndex].Flare = math.clamp(math.round(value), 0, RoadMath.MAX_ARM_FLARE)
+			model:SetAttribute("Arms", RoadMath.serializeArms(specs))
+		elseif action == "ArmArrow" and armIndex then
+			-- Toggle one letter of one entry lane's arrow (value: { Lane,
+			-- Letter }), starting from the automatic arrows if need be
+			local spec = specs[armIndex]
+			local arrows = RoadMath.laneArrows(spec.Arrows, spec.Entry + (spec.Flare or 0))
+			local letters = arrows[value.Lane]
+			if letters then
+				local toggled = ""
+				for _, letter in { "L", "A", "R" } do
+					local has = string.find(letters, letter, 1, true) ~= nil
+					if has ~= (letter == value.Letter) then
+						toggled ..= letter
+					end
+				end
+				arrows[value.Lane] = toggled
+				spec.Arrows = RoadMath.serializeLaneArrows(arrows)
+				model:SetAttribute("Arms", RoadMath.serializeArms(specs))
+			end
+		elseif action == "ArmArrowsAuto" and armIndex then
+			specs[armIndex].Arrows = ""
+			model:SetAttribute("Arms", RoadMath.serializeArms(specs))
+		elseif action == "FlareLength" then
+			model:SetAttribute("FlareLength", math.max(value, 1))
 		elseif action == "SplitterStyle" then
 			model:SetAttribute("SplitterStyle", if value == "Hatched" then "Hatched" else "Kerbed")
 		elseif action == "ArmLength" or action == "SplitterWidth" or action == "EntryKerbRadius" then
@@ -2293,6 +2328,15 @@ local function createRoadSession(plugin: Plugin)
 			ArmAngle = if roundabout and roundaboutArm then roundabout.Arms[roundaboutArm].Angle else nil,
 			ArmOwnLength = if roundabout and roundaboutArm then roundabout.Arms[roundaboutArm].Length else nil,
 			ArmSkew = if roundabout and roundaboutArm then roundabout.Arms[roundaboutArm].Skew else nil,
+			ArmFlare = if roundabout and roundaboutArm then roundabout.Arms[roundaboutArm].Flare else nil,
+			ArmArrows = if roundabout and roundaboutArm
+				then RoadMath.laneArrows(
+					roundabout.Arms[roundaboutArm].Arrows,
+					roundabout.Arms[roundaboutArm].Entry + roundabout.Arms[roundaboutArm].Flare
+				)
+				else nil,
+			ArmArrowsAuto = if roundabout and roundaboutArm then roundabout.Arms[roundaboutArm].Arrows == "" else nil,
+			FlareLength = if roundabout then roundabout.FlareLength else nil,
 			SplitterStyle = if roundabout then roundabout.SplitterStyle else nil,
 			LaneWidth = (selected.Segment.Model:GetAttribute("LaneWidth" .. laneAxisSuffix) :: number?) or RoadDefaults.LaneWidth,
 			SidewalkWidth = (selected.Segment.Model:GetAttribute("SidewalkWidth") :: number?) or RoadDefaults.SidewalkWidth,

@@ -1071,4 +1071,38 @@ return function(t: TestTypes.TestContext)
 		expectFuzzy(t, ending.WorldCFrame.Position, mouth + direction * 200)
 		expectFuzzy(t, ending.WorldCFrame.LookVector, direction)
 	end)
+
+	t.test("roundabout arms: flares and lane arrows", function()
+		local arms = RoadMath.parseArms("0,1,2,0,0,1,la/x/AR;90,1,0,0,0,2;180,1,1,0,0,9")
+		t.expect(arms[1].Flare).toBe(1)
+		-- Arrow fields keep only arrow letters and separators
+		t.expect(arms[1].Arrows).toBe("LA//AR")
+		-- An exit-only arm can't flare; flares are limited
+		t.expect(arms[2].Flare).toBe(0)
+		t.expect(arms[3].Flare).toBe(RoadMath.MAX_ARM_FLARE)
+		t.expect(RoadMath.serializeArms(arms)).toBe("0,1,2,0,0,1,LA//AR;90,1,0;180,1,1,0,0,3")
+		t.expect(RoadMath.serializeArms({ { Angle = 0, Exit = 1, Entry = 1, Length = 0, Skew = 0, Flare = 0, Arrows = "L/R" } }))
+			.toBe("0,1,1,0,0,0,L/R")
+
+		-- Automatic arrows: none on one lane; two lanes are left-and-ahead
+		-- and right; more have left, aheads and right
+		t.expect(RoadMath.laneArrows("", 1)[1]).toBe("")
+		local two = RoadMath.laneArrows(nil, 2)
+		t.expect(two[1]).toBe("LA")
+		t.expect(two[2]).toBe("R")
+		local four = RoadMath.laneArrows("", 4)
+		t.expect(table.concat(four, "/")).toBe("L/A/A/R")
+		-- Stored arrows: letters tidied into L, A, R order, missing lanes blank
+		local stored = RoadMath.laneArrows("RA/-", 3)
+		t.expect(stored[1]).toBe("AR")
+		t.expect(stored[2]).toBe("")
+		t.expect(stored[3]).toBe("")
+		t.expect(RoadMath.serializeLaneArrows(stored)).toBe("AR/-/-")
+
+		-- A flare doesn't move the arm's end
+		local plain = makeRoundabout({ IslandShape = "0,0,60", Arms = "0,1,1" })
+		local flared = makeRoundabout({ IslandShape = "0,0,60", Arms = "0,1,1,0,0,2" })
+		expectFuzzy(t, RoadMath.getEndpoint(flared, "Arm1").WorldCFrame.Position,
+			RoadMath.getEndpoint(plain, "Arm1").WorldCFrame.Position)
+	end)
 end

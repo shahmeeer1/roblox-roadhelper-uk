@@ -46,6 +46,9 @@ local RoadDefaults = {
 	RoundaboutSplitterWidth = 16,
 	RoundaboutEntryKerbRadius = 24,
 	RoundaboutArms = "0,1,1;90,1,1;180,1,1;270,1,1",
+	-- How far out an arm's entry flare reaches from the ring (about 14 m):
+	-- its extra lanes run full width for the first half, then taper away
+	RoundaboutFlareLength = 90,
 }
 
 -- Total road width with the default lane layout

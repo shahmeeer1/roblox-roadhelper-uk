@@ -88,6 +88,8 @@ export type RoundaboutLayout = {
 	-- "Kerbed" (a raised island, hatched ahead of its nose) or "Hatched"
 	-- (painted only)
 	SplitterStyle: "Kerbed" | "Hatched",
+	-- How far out from the ring an arm's entry flare reaches
+	FlareLength: number,
 }
 
 -- One of a roundabout's arms (see the Roundabouts section)
@@ -103,6 +105,11 @@ export type RoundaboutArm = {
 	Length: number,
 	LengthOverride: number,
 	Skew: number,
+	-- Extra entry lanes the approach flares out to at the give way line, and
+	-- the entry lanes' arrows as stored ("" for automatic; see
+	-- RoadMath.laneArrows)
+	Flare: number,
+	Arrows: string,
 	-- Where its axis meets the island outline, and its direction (the
 	-- outline's outward normal there, swung by the skew)
 	AttachX: number,
@@ -463,20 +470,32 @@ end
 ]]
 local MAX_ARMS = 12
 
--- An arm as stored: "angle,exit,entry" plus optionally ",length,skew". A
--- length of 0 uses the roundabout's ArmLength; skew (degrees, within
--- MAX_ARM_SKEW either way) swings the arm off square to the island edge,
--- clockwise seen from above for positive values.
+-- An arm as stored: "angle,exit,entry" plus optionally
+-- ",length,skew,flare,arrows". A length of 0 uses the roundabout's
+-- ArmLength; skew (degrees, within MAX_ARM_SKEW either way) swings the arm
+-- off square to the island edge, clockwise seen from above for positive
+-- values; flare is extra entry lanes at the give way line (up to
+-- MAX_ARM_FLARE); arrows are the entry lanes' arrows (see
+-- RoadMath.laneArrows), "" for automatic.
 export type ArmSpec = {
 	Angle: number,
 	Exit: number,
 	Entry: number,
 	Length: number,
 	Skew: number,
+	Flare: number?,
+	Arrows: string?,
 }
 
 local MAX_ARM_SKEW = 45
 RoadMath.MAX_ARM_SKEW = MAX_ARM_SKEW
+local MAX_ARM_FLARE = 3
+RoadMath.MAX_ARM_FLARE = MAX_ARM_FLARE
+
+-- Only arrow letters and separators survive in a stored arrows field
+local function sanitizeArrows(value: string?): string
+	return (string.gsub(string.upper(value or ""), "[^LAR/%-]", ""))
+end
 
 function RoadMath.parseArms(value: any): { ArmSpec }
 	local arms = {}
@@ -495,6 +514,9 @@ function RoadMath.parseArms(value: any): { ArmSpec }
 					Entry = entryLanes,
 					Length = math.max(tonumber(parts[4]) or 0, 0),
 					Skew = math.clamp(tonumber(parts[5]) or 0, -MAX_ARM_SKEW, MAX_ARM_SKEW),
+					-- (Only an arm with entry lanes can flare)
+					Flare = if entryLanes > 0 then math.clamp(math.floor(tonumber(parts[6]) or 0), 0, MAX_ARM_FLARE) else 0,
+					Arrows = sanitizeArrows(parts[7]),
 				})
 			end
 		end
@@ -509,12 +531,69 @@ function RoadMath.serializeArms(arms: { ArmSpec }): string
 	end
 	for _, arm in arms do
 		local entry = `{tidy(arm.Angle)},{arm.Exit},{arm.Entry}`
-		if (arm.Length or 0) ~= 0 or (arm.Skew or 0) ~= 0 then
-			entry ..= `,{tidy(arm.Length or 0)},{tidy(arm.Skew or 0)}`
+		-- The optional fields, up to the last one that's set
+		local extras = {
+			tidy(arm.Length or 0),
+			tidy(arm.Skew or 0),
+			tostring(arm.Flare or 0),
+			sanitizeArrows(arm.Arrows),
+		}
+		while #extras > 0 and (extras[#extras] == "0" or extras[#extras] == "") do
+			table.remove(extras)
+		end
+		if #extras > 0 then
+			entry ..= "," .. table.concat(extras, ",")
 		end
 		table.insert(entries, entry)
 	end
 	return table.concat(entries, ";")
+end
+
+--[[
+	Lane arrows on an arm's approach: one designation per entry lane at the
+	give way line, listed left to right as the driver sees them, each made
+	of the letters L (left), A (ahead) and R (right) in that order, or ""
+	for no arrow. Stored as "LA/R" ("-" for a lane without one); with
+	nothing stored they're automatic: none for a single lane, otherwise the
+	leftmost lane turns left (and goes ahead when there are only two), the
+	rightmost turns right, and any between go ahead (Highway Code rule 186).
+]]
+function RoadMath.laneArrows(stored: string?, lanes: number): { string }
+	local arrows = {}
+	local value = sanitizeArrows(stored)
+	if value == "" then
+		for lane = 1, lanes do
+			table.insert(
+				arrows,
+				if lanes < 2 then ""
+					elseif lane == 1 then (if lanes == 2 then "LA" else "L")
+					elseif lane == lanes then "R"
+					else "A"
+			)
+		end
+		return arrows
+	end
+	local entries = string.split(value, "/")
+	for lane = 1, lanes do
+		local entry = entries[lane] or ""
+		local letters = ""
+		for _, letter in { "L", "A", "R" } do
+			if string.find(entry, letter, 1, true) then
+				letters ..= letter
+			end
+		end
+		table.insert(arrows, letters)
+	end
+	return arrows
+end
+
+-- Lane arrows as stored (never "", which means automatic)
+function RoadMath.serializeLaneArrows(arrows: { string }): string
+	local entries = {}
+	for _, letters in arrows do
+		table.insert(entries, if letters == "" then "-" else letters)
+	end
+	return table.concat(entries, "/")
 end
 
 -- Points around the island outline ("stations") with the outward normal at
@@ -620,6 +699,8 @@ function RoadMath.roundaboutLayout(model: Instance): RoundaboutLayout
 			Length = length,
 			LengthOverride = arm.Length,
 			Skew = arm.Skew,
+			Flare = arm.Flare or 0,
+			Arrows = arm.Arrows or "",
 			AttachX = px,
 			AttachZ = pz,
 			NX = nx,
@@ -651,6 +732,7 @@ function RoadMath.roundaboutLayout(model: Instance): RoundaboutLayout
 			getNumberAttribute(model, "EntryKerbRadius", RoadDefaults.RoundaboutEntryKerbRadius),
 			sidewalkWidth + 2
 		),
+		FlareLength = math.max(getNumberAttribute(model, "FlareLength", RoadDefaults.RoundaboutFlareLength), 1),
 	}
 end
 

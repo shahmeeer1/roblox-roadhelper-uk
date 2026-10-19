@@ -61,9 +61,10 @@ return function(t: TestTypes.TestContext)
 		local rectangle = table.clone(base)
 		rectangle.IslandShape = "-90,-40,20;90,-40,20;90,40,20;-90,40,20"
 		rectangle.ApronWidth = 12
-		-- An uneven mix: a two-lane approach, an exit-only arm, an arm off at
-		-- an odd angle, and a longer arm skewed 25 degrees
-		rectangle.Arms = "0,1,2;100,1,1;200,1,0;300,2,1,180,25"
+		-- An uneven mix: a two-lane approach flaring to three with its own
+		-- arrows, an exit-only arm, an arm off at an odd angle, and a longer
+		-- arm skewed 25 degrees with a flare and automatic arrows
+		rectangle.Arms = "0,1,2,0,0,1,L/A/AR;100,1,1;200,1,0;300,2,1,180,25,1"
 		local models = {
 			buildRoundabout(round, CFrame.new(origin + Vector3.new(-200, 0, 0))),
 			buildRoundabout(rectangle, CFrame.new(origin + Vector3.new(220, 0, 0))),

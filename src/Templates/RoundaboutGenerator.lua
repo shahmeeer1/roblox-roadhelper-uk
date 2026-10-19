@@ -22,11 +22,16 @@ local defaultAttributes = {
 	-- The circulating carriageway: lanes, and each lane's width
 	RingLanes = 2,
 	LaneWidth = 24,
-	-- The arms, "angle,exit,entry[,length,skew];...": the direction from the
-	-- island's centroid in degrees (atan2(z, x)), lanes leaving and lanes
-	-- entering, and optionally the arm's own length (0 for ArmLength) and
-	-- skew off square to the island edge (degrees, up to 45 either way)
+	-- The arms, "angle,exit,entry[,length,skew,flare,arrows];...": the
+	-- direction from the island's centroid in degrees (atan2(z, x)), lanes
+	-- leaving and lanes entering, and optionally the arm's own length (0 for
+	-- ArmLength), skew off square to the island edge (degrees, up to 45 either
+	-- way), extra entry lanes it flares out to at the give way line (up to 3),
+	-- and its entry lanes' arrows left to right ("LA/R"; "-" for none, empty
+	-- for automatic)
 	Arms = "0,1,1;90,1,1;180,1,1;270,1,1",
+	-- How far out from the ring the arms' entry flares reach
+	FlareLength = 90,
 	-- How far the arms run out from the ring, the splitter island between
 	-- each arm's entry and exit lanes and its style ("Kerbed": raised, with
 	-- hatching ahead of its nose; "Hatched": painted only), and the kerb
@@ -70,6 +75,7 @@ local SMOOTH = Enum.SurfaceType.Smooth
 local MAX_CORNERS = 12
 local MAX_ARMS = 12
 local MAX_ARM_SKEW = 45
+local MAX_ARM_FLARE = 3
 local DEFAULT_RADIUS = 60
 -- Outline sampling: at most this much turn between stations
 local ARC_STEP = math.rad(6)
@@ -102,6 +108,18 @@ local NOSE_WIDTH = 6
 local HATCH_WIDTH = 2
 local HATCH_SPACING = 12
 local FILLET_STEPS = 8
+-- Entry flares: the extra lanes run full width for this much of the flare
+-- length, then taper away (and the flare stops short of the arm's end)
+local FLARE_FULL = 0.5
+local FLARE_MAX_FRACTION = 0.9
+-- Lane arrows: how far back from the give way line, their length, shaft
+-- width, head size, and how far a turn arrow's branch reaches sideways
+local ARROW_GAP = 8
+local ARROW_LENGTH = 30
+local ARROW_SHAFT = 1.2
+local ARROW_HEAD_LENGTH = 8
+local ARROW_HEAD_WIDTH = 5
+local ARROW_TURN_REACH = 5
 
 local SOLID_TEXTURE = "rbxassetid://127451784449848"
 local DOTTED_TEXTURE = "rbxassetid://129215561553463"
@@ -141,6 +159,10 @@ local function parseIslandShape(value)
 	return circles
 end
 
+local function sanitizeArrows(value)
+	return (string.gsub(string.upper(value or ""), "[^LAR/%-]", ""))
+end
+
 -- The arms (identical to RoadMath.parseArms)
 local function parseArms(value)
 	local arms = {}
@@ -159,11 +181,44 @@ local function parseArms(value)
 					Entry = entryLanes,
 					Length = math.max(tonumber(parts[4]) or 0, 0),
 					Skew = math.clamp(tonumber(parts[5]) or 0, -MAX_ARM_SKEW, MAX_ARM_SKEW),
+					Flare = if entryLanes > 0 then math.clamp(math.floor(tonumber(parts[6]) or 0), 0, MAX_ARM_FLARE) else 0,
+					Arrows = sanitizeArrows(parts[7]),
 				})
 			end
 		end
 	end
 	return arms
+end
+
+-- Each entry lane's arrow letters, left to right as the driver sees them
+-- (identical to RoadMath.laneArrows)
+local function laneArrows(stored, lanes)
+	local arrows = {}
+	local value = sanitizeArrows(stored)
+	if value == "" then
+		for lane = 1, lanes do
+			table.insert(
+				arrows,
+				if lanes < 2 then ""
+					elseif lane == 1 then (if lanes == 2 then "LA" else "L")
+					elseif lane == lanes then "R"
+					else "A"
+			)
+		end
+		return arrows
+	end
+	local entries = string.split(value, "/")
+	for lane = 1, lanes do
+		local entry = entries[lane] or ""
+		local letters = ""
+		for _, letter in { "L", "A", "R" } do
+			if string.find(entry, letter, 1, true) then
+				letters ..= letter
+			end
+		end
+		table.insert(arrows, letters)
+	end
+	return arrows
 end
 
 -- The convex hull of the circles as arcs in order around the outline, each
@@ -322,6 +377,7 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 		local armLength = math.max(attributes.ArmLength or 120, 1)
 		local hatchedSplitters = attributes.SplitterStyle == "Hatched"
 		local kerbRadius = math.max(attributes.EntryKerbRadius or 24, sidewalkWidth + 2)
+		local flareLength = math.max(attributes.FlareLength or 90, 1)
 
 		local stations = {}
 		for _, piece in hullOfCircles(circles) do
@@ -361,7 +417,7 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 		local islandMaterial = if sidewalkWidth > 0 then SIDEWALK_MATERIAL else attributes.BlendMaterial
 
 		-- two WedgeParts forming triangle pa-pb-pc, extruded `thickness` downward
-		local function tri(pa, pb, pc, color, material, mVariant, thickness)
+		local function tri(pa, pb, pc, color, material, mVariant, thickness, name)
 			parameters:Pause()
 			local a2, b2, c2 = pa, pb, pc
 			local ab, ac, bc = b2 - a2, c2 - a2, c2 - b2
@@ -387,7 +443,7 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 				w.Anchored = true
 				w.TopSurface = SMOOTH
 				w.BottomSurface = SMOOTH
-				w.Name = "Fill"
+				w.Name = name or "Fill"
 				w.Color = color
 				w.Material = material
 				w.MaterialVariant = mVariant
@@ -447,6 +503,9 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 				AZ = pz + nz * toMouth,
 				Length = length,
 				Taper = length * TAPER_FRACTION,
+				Flare = spec.Flare,
+				FlareLength = math.min(flareLength, length * FLARE_MAX_FRACTION),
+				Arrows = spec.Arrows,
 			}
 			-- A splitter island only separates two directions
 			arm.Splitter = if spec.Exit > 0 and spec.Entry > 0 then math.max(attributes.SplitterWidth or 16, 0) else 0
@@ -467,10 +526,22 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 		local function gapAt(arm, a)
 			return arm.Splitter * (1 - smoothstep(math.clamp(a / arm.Taper, 0, 1)))
 		end
+		-- How much wider the entry is at a for its flare: its extra lanes run
+		-- full width out from the ring, then taper away
+		local entrySide = -exitSide
+		local function flareAt(arm, a)
+			if arm.Flare == 0 then
+				return 0
+			end
+			local full = arm.FlareLength * FLARE_FULL
+			local u = math.clamp((a - full) / (arm.FlareLength - full), 0, 1)
+			return arm.Flare * laneWidth * (1 - smoothstep(u))
+		end
 		-- The roadway's outer edge on one side (signed lat) at a
 		local function outerAt(arm, side, a)
 			local lanes = if side > 0 then arm.PlusLanes else arm.MinusLanes
-			return side * (gapAt(arm, a) / 2 + lanes * laneWidth)
+			local flare = if side == entrySide then flareAt(arm, a) else 0
+			return side * (gapAt(arm, a) / 2 + lanes * laneWidth + flare)
 		end
 
 		-- Where the line along an arm at a lateral offset crosses the outline
@@ -704,7 +775,7 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 			for k = 0, ARM_SLICES do
 				table.insert(slices, arm.Length * k / ARM_SLICES)
 			end
-			for _, extra in { back, front, islandStart, noseA } do
+			for _, extra in { back, front, islandStart, noseA, arm.FlareLength * FLARE_FULL, arm.FlareLength } do
 				if extra < arm.Length then
 					table.insert(slices, extra)
 				end
@@ -853,6 +924,48 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 					travelled += (point(b, d, 0) - point(a, d, 0)).Magnitude
 				end
 			end
+			-- A lane arrow, drawn through `at(u, v)`: u along it from its tail
+			-- to its tip, v to its left. Letters L, A and R give its heads: a
+			-- straight-ahead head on the shaft, and turn heads on branches
+			-- angled off it.
+			local function arrowBar(pa, pb)
+				local len = (pb - pa).Magnitude
+				if len < 0.05 then
+					return
+				end
+				parameters:Pause()
+				local part = createPart("RoadMarking", laneColor, SAND, Vector3.new(len + 0.05, MARK_THICKNESS, ARROW_SHAFT),
+					CFrame.lookAt((pa + pb) / 2, pb) * CFrame.Angles(0, -math.pi / 2, 0))
+				part.Parent = targetContainer
+			end
+			local function arrowHead(at, u, v, du, dv)
+				local lift = Vector3.yAxis * (MARK_THICKNESS / 2)
+				local w = ARROW_HEAD_WIDTH / 2
+				tri(at(u - dv * w, v + du * w) + lift, at(u + dv * w, v - du * w) + lift,
+					at(u + du * ARROW_HEAD_LENGTH, v + dv * ARROW_HEAD_LENGTH) + lift,
+					laneColor, SAND, "", MARK_THICKNESS, "RoadMarking")
+			end
+			local function drawArrow(at, letters)
+				local ahead = string.find(letters, "A", 1, true) ~= nil
+				local branchAt = ARROW_LENGTH * 0.35
+				local shaftEnd = if ahead then ARROW_LENGTH - ARROW_HEAD_LENGTH else branchAt
+				-- (In a few pieces, so it bends with the lane)
+				for i = 0, 2 do
+					arrowBar(at(shaftEnd * i / 3, 0), at(shaftEnd * (i + 1) / 3, 0))
+				end
+				if ahead then
+					arrowHead(at, shaftEnd, 0, 1, 0)
+				end
+				for _, turn in { { "L", 1 }, { "R", -1 } } do
+					if string.find(letters, turn[1], 1, true) then
+						local side = turn[2]
+						local u, v = branchAt + ARROW_TURN_REACH, side * ARROW_TURN_REACH
+						arrowBar(at(branchAt, 0), at(u, v))
+						arrowHead(at, u, v, math.sqrt(0.5), side * math.sqrt(0.5))
+					end
+				end
+			end
+
 			ringLine(EDGE_INSET, false, false)
 			ringLine(ringWidth - EDGE_INSET, false, true)
 			for k = 1, ringLanes - 1 do
@@ -896,12 +1009,31 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 							strip(onArc(k), onArc(k + 1), laneColor, MARK_WIDTH, false)
 						end
 					end
-					-- Lane lines between each side's lanes
+					-- Lane lines between each side's lanes; a flared entry's
+					-- extra lanes' lines run out as far as their lanes are
+					-- at least half a lane wide
 					local lanes = if side > 0 then arm.PlusLanes else arm.MinusLanes
-					for k = 1, lanes - 1 do
+					local flare = if side == entrySide then arm.Flare else 0
+					for k = 1, lanes + flare - 1 do
+						local reach = arm.Length
+						if k >= lanes then
+							local function fits(a)
+								return flareAt(arm, a) / laneWidth - (k - lanes) >= 0.5
+							end
+							local lo, hi = 0, arm.FlareLength
+							for _ = 1, 30 do
+								local mid = (lo + hi) / 2
+								if fits(mid) then
+									lo = mid
+								else
+									hi = mid
+								end
+							end
+							reach = lo
+						end
 						armLine(function(a)
 							return side * (gapAt(arm, a) / 2 + k * laneWidth)
-						end, nil, arm.Length, laneColor, true)
+						end, nil, reach, laneColor, true)
 					end
 				end
 				if arm.Splitter > 0 then
@@ -945,7 +1077,6 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 				-- outside it (so on a skewed arm it runs along the ring, not
 				-- square across the arm)
 				if arm.Entry > 0 then
-					local entrySide = -exitSide
 					local inner = math.abs(gapAt(arm, 0) / 2) + (if arm.Exit > 0 then CENTER_OFFSET + 1 else EDGE_INSET)
 					local outer = math.abs(outerAt(arm, entrySide, 0)) - EDGE_INSET
 					local function onLine(lat)
@@ -956,6 +1087,33 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 						local dashEnd = math.min(lat + GIVE_WAY_DASH, outer)
 						strip(onLine(lat), onLine(dashEnd), laneColor, GIVE_WAY_WIDTH, false)
 						lat = dashEnd + GIVE_WAY_GAP
+					end
+				end
+
+				-- Lane arrows on the entry lanes, a little back from the give
+				-- way line
+				if arm.Entry > 0 then
+					local lanes = arm.Entry + arm.Flare
+					for lane, letters in laneArrows(arm.Arrows, lanes) do
+						if letters ~= "" then
+							-- Lanes are listed left to right as the driver sees
+							-- them (facing the ring, the left is -lat); count
+							-- them out from the splitter
+							local k = if entrySide < 0 then lanes + 1 - lane else lane
+							local function centreAt(a)
+								return entrySide * (gapAt(arm, a) / 2 + (k - 0.5) * laneWidth)
+							end
+							local tip = edgeAt(arm, centreAt(0)) + GIVE_WAY_SETBACK + GIVE_WAY_WIDTH + ARROW_GAP
+							local tail = tip + ARROW_LENGTH
+							if tail < arm.Length - 1 then
+								drawArrow(function(u, v)
+									-- u toward the ring from the tail, v to the
+									-- driver's left, following the lane's centre
+									local a = tail - u
+									return armPoint(arm, a, centreAt(a) - v, markHeight)
+								end, letters)
+							end
+						end
 					end
 				end
 			end

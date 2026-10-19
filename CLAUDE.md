@@ -148,7 +148,11 @@ lazy-loads `src/main.lua` on first activation.
   Missing `Arms` means the 4-arm default in both RoadMath and the generator ("" is none).
   Optional per-arm fields `,length,skew`: an own length (0 = `ArmLength`) and a skew off the
   outline normal (degrees, clamped to +-45, positive clockwise from above); a skewed arm starts
-  at its mouth, where its axis crosses the ring's outer edge (`MouthX/Z`).
+  at its mouth, where its axis crosses the ring's outer edge (`MouthX/Z`). Further optional
+  fields `,flare,arrows`: extra entry lanes at the give way line (kerb side, up to 3; full
+  width for the first half of `FlareLength`, then tapering, never reaching the arm's end), and
+  the entry lanes' arrows left to right as the driver sees them (`"LA/R"`, `-` for none, empty
+  for automatic per Highway Code rule 186; `RoadMath.laneArrows`, mirrored in the generator).
   `SplitterStyle` "Kerbed" (default) or "Hatched" (painted only). The Roundabout add cone
   builds a 4-arm roundabout whose `Arm3` joins the road end (arms carry the road's lanes).
   Removing an arm renumbers later ones, so joined roads are remapped, not re-seated by old id.

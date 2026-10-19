@@ -1023,6 +1023,79 @@ local function RoundaboutPanel(props: {
 		})
 	end
 	if state.ArmIndex then
+		-- The entry lanes' arrows: a row of Left/Ahead/Right toggles per lane,
+		-- left to right as the driver sees them, and an Automatic toggle
+		local arrowRows: { [string]: any } = {
+			ListLayout = e("UIListLayout", {
+				SortOrder = Enum.SortOrder.LayoutOrder,
+				Padding = UDim.new(0, 2),
+			}),
+		}
+		local arrows: { string } = state.ArmArrows or {}
+		for lane, letters in arrows do
+			local laneChips: { [string]: any } = {
+				ListLayout = e("UIListLayout", {
+					FillDirection = Enum.FillDirection.Horizontal,
+					HorizontalAlignment = Enum.HorizontalAlignment.Left,
+					VerticalAlignment = Enum.VerticalAlignment.Center,
+					SortOrder = Enum.SortOrder.LayoutOrder,
+					Wraps = true,
+				}),
+				Corner = e("UICorner", {
+					CornerRadius = UDim.new(0, 4),
+				}),
+				Label = e("TextLabel", {
+					Size = UDim2.new(0, 56, 0, 24),
+					BackgroundTransparency = 1,
+					TextColor3 = Colors.OFFWHITE,
+					Text = `Lane {lane}`,
+					Font = Enum.Font.SourceSans,
+					TextSize = 16,
+					LayoutOrder = 0,
+				}),
+			}
+			for index, choice in { { "L", "Left" }, { "A", "Ahead" }, { "R", "Right" } } do
+				laneChips[choice[2]] = e(ChipForToggle, {
+					Text = choice[2],
+					IsCurrent = string.find(letters, choice[1], 1, true) ~= nil,
+					LayoutOrder = index,
+					OnClick = function()
+						props.RoundaboutAction("ArmArrow", { Lane = lane, Letter = choice[1] })
+					end,
+				})
+			end
+			arrowRows["Lane" .. lane] = e("Frame", {
+				Size = UDim2.new(1, 0, 0, 0),
+				BorderSizePixel = 0,
+				BackgroundColor3 = Colors.ACTION_BLUE,
+				AutomaticSize = Enum.AutomaticSize.Y,
+				LayoutOrder = lane,
+			}, laneChips)
+		end
+		arrowRows.Auto = e("Frame", {
+			Size = UDim2.new(1, 0, 0, 0),
+			BorderSizePixel = 0,
+			BackgroundColor3 = Colors.ACTION_BLUE,
+			AutomaticSize = Enum.AutomaticSize.Y,
+			LayoutOrder = #arrows + 1,
+		}, {
+			ListLayout = e("UIListLayout", {
+				FillDirection = Enum.FillDirection.Horizontal,
+				SortOrder = Enum.SortOrder.LayoutOrder,
+			}),
+			Corner = e("UICorner", {
+				CornerRadius = UDim.new(0, 4),
+			}),
+			Auto = e(ChipForToggle, {
+				Text = "Automatic",
+				IsCurrent = state.ArmArrowsAuto == true,
+				LayoutOrder = 1,
+				OnClick = function()
+					props.RoundaboutAction("ArmArrowsAuto")
+				end,
+			}),
+		})
+
 		-- One of the roundabout's arms
 		return e(SubPanel, {
 			Title = `Roundabout Arm {state.ArmIndex}`,
@@ -1069,11 +1142,34 @@ local function RoundaboutPanel(props: {
 				-45,
 				"ArmSkew"
 			),
+			Flare = if state.ArmEntry > 0
+				then numberField(
+					"Flare Lanes",
+					"Extra entry lanes the approach widens out to at the give way line (up to 3), added on the kerb side. They run full width for the first half of the roundabout's Flare Length, then taper away.",
+					6,
+					state.ArmFlare,
+					0,
+					"ArmFlare"
+				)
+				else nil,
+			Arrows = if #(state.ArmArrows or {}) > 0
+				then e(HelpGui.WithHelpIcon, {
+					Help = e(HelpGui.BasicTooltip, {
+						HelpRichText = "Arrows painted on each entry lane at the give way line, listed left to right as the driver sees them. Automatic follows the Highway Code: none on a single lane, otherwise the left lane turns left, the right lane turns right, and lanes between go ahead.",
+					}),
+					LayoutOrder = 7,
+					Subject = e("Frame", {
+						Size = UDim2.new(1, 0, 0, 0),
+						BackgroundTransparency = 1,
+						AutomaticSize = Enum.AutomaticSize.Y,
+					}, arrowRows),
+				})
+				else nil,
 			Remove = e("Frame", {
 				Size = UDim2.new(1, 0, 0, 0),
 				AutomaticSize = Enum.AutomaticSize.Y,
 				BackgroundTransparency = 1,
-				LayoutOrder = 6,
+				LayoutOrder = 8,
 			}, {
 				Button = e(OperationButton, {
 					Text = "Remove Arm",
@@ -1231,6 +1327,14 @@ local function RoundaboutPanel(props: {
 			state.EntryKerbRadius,
 			1,
 			"EntryKerbRadius"
+		),
+		FlareLength = numberField(
+			"Flare Length",
+			"How far out from the ring the arms' entry flares reach, in studs (an arm's Flare Lanes run full width for the first half, then taper away).",
+			13,
+			state.FlareLength,
+			1,
+			"FlareLength"
 		),
 	})
 end
