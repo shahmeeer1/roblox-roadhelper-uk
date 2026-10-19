@@ -301,6 +301,25 @@ function RoadMath.hasLaneChange(segment: SegmentInfo): boolean
 	return redOverridesActive(segment.Kind, segment.Model)
 end
 
+-- A straight's lane width can also differ between its ends: LaneWidthRed
+-- (when positive; the generator defaults it to -1) is the red end's, and
+-- LaneWidth the blue end's. Both stay centred on the road, so only the
+-- kerbs and roadway edges move.
+RoadMath.RED_LANE_WIDTH = "LaneWidthRed"
+
+local function redLaneWidthActive(kind: SegmentKind, model: Instance): boolean
+	if not RoadMath.supportsLaneChange(kind) then
+		return false
+	end
+	local value = model:GetAttribute(RoadMath.RED_LANE_WIDTH)
+	return typeof(value) == "number" and value > 0
+end
+
+-- Whether the segment has its own lane width at the red end
+function RoadMath.hasLaneWidthChange(segment: SegmentInfo): boolean
+	return redLaneWidthActive(segment.Kind, segment.Model)
+end
+
 -- The forward/backward lane counts at one end of a segment
 local function readEndLaneCounts(kind: SegmentKind, model: Instance, id: EndpointId): (number, number)
 	local armIndex = RoadMath.armIndex(id)
@@ -935,10 +954,13 @@ function RoadMath.getSegmentInfo(instance: Instance): SegmentInfo?
 		}
 	end
 	local laneWidth = getNumberAttribute(model, "LaneWidth", RoadDefaults.LaneWidth)
+	local redLaneWidth = if redLaneWidthActive(kind, model)
+		then getNumberAttribute(model, RoadMath.RED_LANE_WIDTH, laneWidth)
+		else laneWidth
 	local blueForward, blueBackward = readEndLaneCounts(kind, model, "Blue")
 	local redForward, redBackward = readEndLaneCounts(kind, model, "Red")
 	local blueWidth = (blueForward + blueBackward) * laneWidth + 2 * sidewalkWidth
-	local redWidth = (redForward + redBackward) * laneWidth + 2 * sidewalkWidth
+	local redWidth = (redForward + redBackward) * redLaneWidth + 2 * sidewalkWidth
 	return {
 		Model = model,
 		Kind = kind,
@@ -1162,6 +1184,24 @@ function RoadMath.endLaneAttributeNames(segment: SegmentInfo, id: EndpointId): (
 	return RoadMath.laneAttributeNames(segment.Kind, id)
 end
 
+-- The attribute holding the lane width at an end: the red-end override at
+-- the red end of a straight with a lane width change
+function RoadMath.laneWidthAttributeName(segment: SegmentInfo, id: EndpointId): string
+	if id == "Red" and RoadMath.hasLaneWidthChange(segment) then
+		return RoadMath.RED_LANE_WIDTH
+	end
+	return "LaneWidth" .. RoadMath.laneSuffix(segment.Kind, id)
+end
+
+-- The lane width at an endpoint
+function RoadMath.endLaneWidth(endpoint: Endpoint): number
+	return getNumberAttribute(
+		endpoint.Segment.Model,
+		RoadMath.laneWidthAttributeName(endpoint.Segment, endpoint.Id),
+		RoadDefaults.LaneWidth
+	)
+end
+
 -- The lanes leaving (out) and entering (in) the segment through an end
 function RoadMath.getLaneCounts(endpoint: Endpoint): (number, number)
 	local forward, backward = readEndLaneCounts(endpoint.Segment.Kind, endpoint.Segment.Model, endpoint.Id)
@@ -1367,19 +1407,28 @@ end
 -- entering through each geographic end stay the same.)
 function RoadMath.swappedLaneValues(segment: SegmentInfo): { [string]: number }
 	local blueForward, blueBackward = readEndLaneCounts(segment.Kind, segment.Model, "Blue")
+	local values: { [string]: number }
 	if RoadMath.hasLaneChange(segment) then
 		local redForward, redBackward = readEndLaneCounts(segment.Kind, segment.Model, "Red")
-		return {
+		values = {
 			LaneCountForward = redBackward,
 			LaneCountBackward = redForward,
 			[RoadMath.RED_LANE_OVERRIDES[1]] = blueBackward,
 			[RoadMath.RED_LANE_OVERRIDES[2]] = blueForward,
 		}
+	else
+		values = {
+			LaneCountForward = blueBackward,
+			LaneCountBackward = blueForward,
+		}
 	end
-	return {
-		LaneCountForward = blueBackward,
-		LaneCountBackward = blueForward,
-	}
+	if RoadMath.hasLaneWidthChange(segment) then
+		-- The lane widths follow their geographic ends too
+		local blueLaneWidth = getNumberAttribute(segment.Model, "LaneWidth", RoadDefaults.LaneWidth)
+		values.LaneWidth = getNumberAttribute(segment.Model, RoadMath.RED_LANE_WIDTH, blueLaneWidth)
+		values[RoadMath.RED_LANE_WIDTH] = blueLaneWidth
+	end
+	return values
 end
 
 --------------------------------------------------------------------------------

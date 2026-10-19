@@ -106,6 +106,13 @@ lazy-loads `src/main.lua` on first activation.
   lane positions by the path's sideways progress, so that kerb comes out straight. Single-end
   edits are only allowed at open ends. SwapEnds moves swap lane counts too
   (`RoadMath.swappedLaneValues`), since travel through the segment reverses.
+- Lane width changes (straights only): `LaneWidthRed` (> 0; the generator defaults it to -1,
+  "same as `LaneWidth`") gives the red end its own lane width, for joining roads whose lanes
+  differ in width. Both ends stay centred on the road (no sideways shift, unlike a lane count
+  change), and the generator blends the roadway edges and kerbs over the whole segment the
+  same way as a lane change. It combines with lane count changes. The panel's "Same lane width
+  at both ends" checkbox (`SetSizing("LaneWidthChange", ...)`) turns it on and off, and Lane
+  Width then edits the selected end (`RoadMath.laneWidthAttributeName`/`endLaneWidth`).
 - StraightRoad endpoints (local): blue `(∓sway, -Y/2, -Z/2)` outward -Z, red `(±sway, +Y/2, +Z/2)`
   outward +Z, where `sway = max((X - width)/2, 0)` and the sign pair mirrors with `Flip`.
 - CurveRoad endpoints (local): blue `(-X/2 + width/2, ·, -Z/2)` outward -Z, red

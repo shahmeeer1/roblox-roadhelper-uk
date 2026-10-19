@@ -571,7 +571,7 @@ local function SizingPanel(props: {
 			else nil,
 		LaneWidthInput = e(HelpGui.WithHelpIcon, {
 			Help = e(HelpGui.BasicTooltip, {
-				HelpRichText = "Width of each lane in studs. The bounds adjust so both endpoints stay in place.",
+				HelpRichText = "Width of each lane in studs. The bounds adjust so both endpoints stay in place. With a lane width change (Same lane width at both ends unticked) this is the selected end's width.",
 			}),
 			LayoutOrder = 5,
 			Subject = e(NumberInput, {
@@ -586,6 +586,21 @@ local function SizingPanel(props: {
 				end,
 			}),
 		}),
+		SameLaneWidthCheckbox = if (state :: any).CanChangeLanes
+			then e(HelpGui.WithHelpIcon, {
+				Help = e(HelpGui.BasicTooltip, {
+					HelpRichText = "Untick to give the two ends different lane widths, to join roads with wider and narrower lanes. The road still joins at its centre at both ends, while the roadway and kerbs widen or narrow smoothly along its length. Lane Width then sets just the selected end.",
+				}),
+				LayoutOrder = 5.5,
+				Subject = e(Checkbox, {
+					Label = "Same lane width at both ends",
+					Checked = (state :: any).SameLaneWidthBothEnds,
+					Changed = function(same: boolean)
+						props.SetSizing("LaneWidthChange", if same then 0 else 1)
+					end,
+				}),
+			})
+			else nil,
 		SidewalkWidthInput = e(HelpGui.WithHelpIcon, {
 			Help = e(HelpGui.BasicTooltip, {
 				HelpRichText = "Width of the raised sidewalk on each side, in studs. Zero removes the sidewalks entirely.",

@@ -117,6 +117,9 @@ export type SelectionState = {
 	RingMarkings: string?,
 	SplitterStyle: string?,
 	LaneWidth: number,
+	-- Straights only: whether both ends have the one lane width (else the
+	-- Lane Width field sets just the selected end's)
+	SameLaneWidthBothEnds: boolean,
 	SidewalkWidth: number,
 	IntersectionAngle: number,
 	-- Nominal corner curve radius of an intersection (half the bounding box
@@ -263,6 +266,7 @@ local GEOMETRY_ATTRIBUTES = {
 	LaneCountBackward = true,
 	LaneCountForwardRed = true,
 	LaneCountBackwardRed = true,
+	LaneWidthRed = true,
 	-- Intersection lane layout (translated onto the road's lane attributes
 	-- when extending an intersection end, not copied directly)
 	LaneCountForwardX = true,
@@ -302,6 +306,7 @@ local function clearLaneChange(model: Model)
 	for _, name in RoadMath.RED_LANE_OVERRIDES do
 		model:SetAttribute(name, nil)
 	end
+	model:SetAttribute(RoadMath.RED_LANE_WIDTH, nil)
 end
 
 -- Give one end of a (typically new) segment the lanes matching the end it
@@ -1051,10 +1056,10 @@ local function createRoadSession(plugin: Plugin)
 				newModel:SetAttribute(name, value)
 			end
 		end
-		if openEnd.Segment.Kind == "Intersection" then
-			-- Translate the extended exit's road width onto the road's
-			local axis = RoadMath.laneSuffix(openEnd.Segment.Kind, openEnd.Id)
-			newModel:SetAttribute("LaneWidth", sourceModel:GetAttribute("LaneWidth" .. axis) or RoadDefaults.LaneWidth)
+		if openEnd.Segment.Kind == "Intersection" or RoadMath.hasLaneWidthChange(openEnd.Segment) then
+			-- Translate the extended exit's road width onto the road's (and
+			-- carry on at the lane width of a tapering straight's open end)
+			newModel:SetAttribute("LaneWidth", RoadMath.endLaneWidth(openEnd))
 		end
 		-- The lanes carry on through the joint in the same travel directions
 		clearLaneChange(newModel)
@@ -1666,9 +1671,8 @@ local function createRoadSession(plugin: Plugin)
 					newModel:SetAttribute(name, value)
 				end
 			end
-			if selected.Segment.Kind == "Intersection" then
-				local axis = RoadMath.laneSuffix(selected.Segment.Kind, selected.Id)
-				newModel:SetAttribute("LaneWidth", selected.Segment.Model:GetAttribute("LaneWidth" .. axis) or RoadDefaults.LaneWidth)
+			if selected.Segment.Kind == "Intersection" or RoadMath.hasLaneWidthChange(selected.Segment) then
+				newModel:SetAttribute("LaneWidth", RoadMath.endLaneWidth(selected))
 			end
 			-- Same lanes as at the selected end (the free-standing segment's
 			-- orientation is arbitrary, so out/in map onto forward/backward)
@@ -2738,7 +2742,6 @@ local function createRoadSession(plugin: Plugin)
 			return { Kind = "none" :: "none" }
 		end
 		local partner = getPartnerEndpoint()
-		local laneAxisSuffix = RoadMath.laneSuffix(selected.Segment.Kind, selected.Id)
 		local lanesOut, lanesIn = RoadMath.getLaneCounts(selected)
 		local splitLayout = selected.Segment.Split
 		local roundabout = selected.Segment.Roundabout
@@ -2828,7 +2831,8 @@ local function createRoadSession(plugin: Plugin)
 				then (selected.Segment.Model:GetAttribute("RingMarkings") :: string?) or "Concentric"
 				else nil,
 			SplitterStyle = if roundabout then roundabout.SplitterStyle else nil,
-			LaneWidth = (selected.Segment.Model:GetAttribute("LaneWidth" .. laneAxisSuffix) :: number?) or RoadDefaults.LaneWidth,
+			LaneWidth = RoadMath.endLaneWidth(selected),
+			SameLaneWidthBothEnds = not RoadMath.hasLaneWidthChange(selected.Segment),
 			SidewalkWidth = (selected.Segment.Model:GetAttribute("SidewalkWidth") :: number?) or RoadDefaults.SidewalkWidth,
 			IntersectionAngle = (selected.Segment.Model:GetAttribute("IntersectionAngle") :: number?) or RoadDefaults.IntersectionAngle,
 			CornerRadius = math.round((selected.Segment.Size.X - selected.Segment.Width
@@ -2887,7 +2891,7 @@ local function createRoadSession(plugin: Plugin)
 		elseif name == "LanesIn" then
 			return inName
 		elseif name == "LaneWidth" then
-			return "LaneWidth" .. RoadMath.laneSuffix(selected.Segment.Kind, selected.Id)
+			return RoadMath.laneWidthAttributeName(selected.Segment, selected.Id)
 		end
 		return name
 	end
@@ -2972,6 +2976,35 @@ local function createRoadSession(plugin: Plugin)
 				;(model :: any).Size = Vector3.new(size.X + (newWZ - oldWZ), size.Y, size.Z + (newWX - oldWX))
 			end
 			reseatConnectedEnds(model, connections)
+			finishRecording()
+			updateDragger()
+			changeSignal:Fire()
+			return
+		end
+		if name == "LaneWidthChange" then
+			-- Give a straight's red end its own lane width (value ~= 0), starting
+			-- from the current one, or one width at both ends again (the
+			-- selected end's). The ends are centred, so neither moves.
+			if not RoadMath.supportsLaneChange(selected.Segment.Kind) then
+				return
+			end
+			local differ = value ~= 0
+			if differ == RoadMath.hasLaneWidthChange(selected.Segment) then
+				return
+			end
+			beginRecording(if differ then "Lane Width Change" else "Same Lane Width")
+			if differ then
+				model:SetAttribute(RoadMath.RED_LANE_WIDTH, RoadMath.endLaneWidth(selected))
+			else
+				model:SetAttribute("LaneWidth", RoadMath.endLaneWidth(selected))
+				model:SetAttribute(RoadMath.RED_LANE_WIDTH, nil)
+			end
+			local resized = RoadMath.getSegmentInfo(model)
+			if resized then
+				local solution = RoadMath.solveWidthChange(selected.Segment, resized.Width, resized.WidthRed);
+				(model :: any).Size = solution.Size
+				model:PivotTo(solution.Pivot)
+			end
 			finishRecording()
 			updateDragger()
 			changeSignal:Fire()

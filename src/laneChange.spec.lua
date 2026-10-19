@@ -111,6 +111,10 @@ return function(t: TestTypes.TestContext)
 				LaneChangeSide = "Offside",
 			}, Vector3.new(124, 0, 240)),
 			case("Plain", 360, {}, Vector3.new(112, 0, 240)),
+			-- Same lanes, wider ones at the red end: both ends stay centred
+			-- (4 lanes of 24 plus sidewalks = 112, of 30 = 136)
+			case("WiderLanes", 540, { LaneWidthRed = 30 }, Vector3.new(136, 0, 240)),
+			case("NarrowerLanes", 720, { LaneWidthRed = 16 }, Vector3.new(112, 0, 240)),
 		}
 
 		local camera = workspace.CurrentCamera
@@ -123,6 +127,8 @@ return function(t: TestTypes.TestContext)
 				checkEnd(t, model, "Red")
 			end
 			t.screenshot("lane changes")
+			camera.CFrame = CFrame.lookAt(origin + Vector3.new(630, 320, -1), origin + Vector3.new(630, 0, 0))
+			t.screenshot("lane width changes")
 		end)
 		camera.CFrame = previousCFrame
 		for _, model in models do

@@ -735,6 +735,40 @@ return function(t: TestTypes.TestContext)
 		t.expect(swapped.LaneCountBackward).toBe(1)
 	end)
 
+	t.test("lane width change: ends can be different widths, centred", function()
+		-- 1 + 1 lanes of 24 at the blue end, 30 at the red, sidewalks 8:
+		-- widths 64 and 76, box 76
+		local seg = makeSegment("Straight", Vector3.new(76, 0, 200), CFrame.identity)
+		local attrs = (seg.Model :: any).attrs
+		attrs.LaneWidth = 24
+		attrs.SidewalkWidth = 8
+		attrs.LaneCountForward = 1
+		attrs.LaneCountBackward = 1
+		t.expect(RoadMath.hasLaneWidthChange(seg)).toBe(false)
+		-- -1 (the generator default) is unset
+		attrs.LaneWidthRed = -1
+		t.expect(RoadMath.hasLaneWidthChange(seg)).toBe(false)
+		t.expect(RoadMath.laneWidthAttributeName(seg, "Red")).toBe("LaneWidth")
+
+		attrs.LaneWidthRed = 30
+		t.expect(RoadMath.hasLaneWidthChange(seg)).toBe(true)
+		t.expect(RoadMath.laneWidthAttributeName(seg, "Red")).toBe("LaneWidthRed")
+		t.expect(RoadMath.laneWidthAttributeName(seg, "Blue")).toBe("LaneWidth")
+		t.expect(RoadMath.endLaneWidth(RoadMath.getEndpoint(seg, "Blue"))).toBe(24)
+		t.expect(RoadMath.endLaneWidth(RoadMath.getEndpoint(seg, "Red"))).toBe(30)
+		-- Curves ignore it
+		local curve = makeSegment("Curve", Vector3.new(128, 0, 128), CFrame.identity);
+		(curve.Model :: any).attrs = table.clone(attrs)
+		t.expect(RoadMath.hasLaneWidthChange(curve)).toBe(false)
+
+		-- Swapping the ends takes the widths with their geographic ends
+		local swapped = RoadMath.swappedLaneValues(seg)
+		t.expect(swapped.LaneWidth).toBe(30)
+		t.expect(swapped.LaneWidthRed).toBe(24)
+		attrs.LaneWidthRed = nil
+		t.expect(RoadMath.swappedLaneValues(seg).LaneWidth).toBe(nil)
+	end)
+
 	t.test("laneChangeShift: the other direction's kerb stays put", function()
 		local seg = makeSegment("Straight", Vector3.new(96, 0, 200), CFrame.identity)
 		-- Red end faces +Z; looking out of it, right is -X. Driving on the

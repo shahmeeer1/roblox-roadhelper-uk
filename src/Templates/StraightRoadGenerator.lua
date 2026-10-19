@@ -26,6 +26,10 @@ local defaultAttributes = {
 	-- Which lane of a changing direction ends or starts: "Offside" (by the centre
 	-- line) or "Nearside" (by the kerb)
 	LaneChangeSide = "Offside",
+	-- A lane width change: the red end's own lane width (-1 = same as LaneWidth).
+	-- The roadway and kerbs widen or narrow smoothly over the whole segment,
+	-- staying centred on the road.
+	LaneWidthRed = -1,
 	SidewalkWidth = 8,
 	MaxAngle = 10,
 	AdjustBlueGrade = 0,
@@ -112,6 +116,10 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 		-- the lanes that exist at only one end narrow to nothing at the other, on the side
 		-- LaneChangeSide picks ("Offside" by the centre line, "Nearside" by the kerb).
 		local laneWidth = attributes.LaneWidth
+		local laneWidths = { B = laneWidth, R = laneWidth }
+		if typeof(attributes.LaneWidthRed) == "number" and attributes.LaneWidthRed > 0 then
+			laneWidths.R = attributes.LaneWidthRed
+		end
 		local function laneCounts(forward, backward)
 			local f = math.max(math.floor(forward or 1), 0)
 			local b = math.max(math.floor(backward or 1), 0)
@@ -129,13 +137,16 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 		then
 			forwardRed, backwardRed = laneCounts(forwardRedOverride, backwardRedOverride)
 		end
-		local laneChange = forwardRed ~= forwardBlue or backwardRed ~= backwardBlue
+		-- (A change in lane width tapers the same way as a change in lane count)
+		local laneChange = forwardRed ~= forwardBlue
+			or backwardRed ~= backwardBlue
+			or laneWidths.B ~= laneWidths.R
 		local driveOnLeft = attributes.DriveSide ~= "Right"
 		local changeAtNearside = attributes.LaneChangeSide == "Nearside"
 
 		local sidewalkWidth = attributes.SidewalkWidth or 8
-		local widthBlue = (forwardBlue + backwardBlue) * laneWidth + 2 * sidewalkWidth
-		local widthRed = (forwardRed + backwardRed) * laneWidth + 2 * sidewalkWidth
+		local widthBlue = (forwardBlue + backwardBlue) * laneWidths.B + 2 * sidewalkWidth
+		local widthRed = (forwardRed + backwardRed) * laneWidths.R + 2 * sidewalkWidth
 		-- The bounding box is laid out around the wider end
 		local width = math.max(widthBlue, widthRed)
 
@@ -497,14 +508,14 @@ local Generator: GeneratorModuleDefinition<typeof(defaultAttributes)> = {
 			local total = 0
 			for _, lane in lanes do
 				if lane[e] then
-					total += laneWidth
+					total += laneWidths[e]
 				end
 			end
 			roadwayHalf[e] = total / 2
 			local lat = -total / 2
 			for k = 0, laneTotal do
 				if k > 0 and lanes[k][e] then
-					lat += laneWidth
+					lat += laneWidths[e]
 				end
 				boundaries[k][e] = lat
 			end
