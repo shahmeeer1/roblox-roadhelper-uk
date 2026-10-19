@@ -1105,4 +1105,80 @@ return function(t: TestTypes.TestContext)
 		expectFuzzy(t, RoadMath.getEndpoint(flared, "Arm1").WorldCFrame.Position,
 			RoadMath.getEndpoint(plain, "Arm1").WorldCFrame.Position)
 	end)
+
+	t.test("roundabout sections: parse and round-trip", function()
+		local sections = RoadMath.parseRingSections("45,3;135.5,1.7,In;junk;90")
+		t.expect(#sections).toBe(2)
+		t.expect(sections[1].Side).toBe("Out")
+		t.expect(sections[2].Lanes).toBe(1)
+		t.expect(sections[2].Side).toBe("In")
+		t.expect(RoadMath.serializeRingSections(sections)).toBe("45,3;135.5,1,In")
+		t.expect(#RoadMath.parseRingSections(nil)).toBe(0)
+	end)
+
+	t.test("roundabout sections: lanes change round the ring, clear of the arms", function()
+		local lanes = function(layout: RoadMath.RoundaboutLayout, position: number): number
+			return RoadMath.ringWidthAt(layout, position) / layout.LaneWidth
+		end
+		-- No sections: RingLanes all the way round
+		local plain = assert(makeRoundabout({ IslandShape = "0,0,60", RingLanes = 2, Arms = "0,1,1" }).Roundabout)
+		t.expect(#plain.Sections).toBe(0)
+		t.expect(lanes(plain, 100)).toBe(2)
+
+		-- Three lanes from 45 degrees, two from 225: positions run the way
+		-- traffic does (clockwise from above, with the angles, driving on
+		-- the left), each change taking RingTaperLength after its boundary
+		local layout = assert(makeRoundabout({
+			IslandShape = "0,0,60",
+			RingLanes = 2,
+			LaneWidth = 24,
+			RingTaperLength = 60,
+			Arms = "",
+			RingSections = "45,3;225,2",
+		}).Roundabout)
+		local first, second = layout.Sections[1], layout.Sections[2]
+		t.expect(first.Previous).toBe(2)
+		t.expect(second.Previous).toBe(3)
+		t.expect(first.Taper).toBe(60)
+		t.expect(first.Clear).toBe(true)
+		t.expect(second.Position > first.Position).toBe(true)
+		t.expect(math.abs(first.Start - first.Position) < 1e-6).toBe(true)
+		t.expect(lanes(layout, first.Position)).toBe(2)
+		t.expect(math.abs(lanes(layout, first.Position + 30) - 2.5) < 1e-6).toBe(true)
+		t.expect(lanes(layout, first.Position + 60)).toBe(3)
+		t.expect(lanes(layout, second.Position + 61)).toBe(2)
+		-- The box is sized for the widest section
+		t.expect(layout.RingWidth).toBe(72)
+
+		-- Driving on the right, positions run the other way round
+		local right = assert(makeRoundabout({
+			IslandShape = "0,0,60",
+			Arms = "",
+			DriveSide = "Right",
+			RingSections = "45,3;225,2",
+		}).Roundabout)
+		t.expect(right.Sections[2].Position < right.Sections[1].Position).toBe(true)
+
+		-- A lane change that would run across an arm's mouth is moved clear of
+		-- it, and the arms sit on the ring's outer edge where they are
+		local armed = assert(makeRoundabout({
+			IslandShape = "0,0,60",
+			RingLanes = 2,
+			LaneWidth = 24,
+			Arms = "0,1,1;90,1,1;180,1,1;270,1,1",
+			RingSections = "85,3;200,2",
+		}).Roundabout)
+		local moved = armed.Sections[1]
+		t.expect(moved.Clear).toBe(true)
+		t.expect(math.abs(moved.Start - moved.Position) > 1).toBe(true)
+		for _, arm in armed.Arms do
+			local width = RoadMath.ringWidthAt(armed, arm.Position)
+			t.expect(arm.RingWidth).toBe(width)
+			-- (Steady across the mouth)
+			t.expect(math.abs(RoadMath.ringWidthAt(armed, arm.Position + 20) - width) < 1e-6).toBe(true)
+			t.expect(math.abs(RoadMath.ringWidthAt(armed, arm.Position - 20) - width) < 1e-6).toBe(true)
+			local mouthRadius = math.sqrt(arm.MouthX ^ 2 + arm.MouthZ ^ 2)
+			t.expect(math.abs(mouthRadius - (60 + width)) < 1e-3).toBe(true)
+		end
+	end)
 end

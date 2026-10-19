@@ -3,9 +3,11 @@
 	selected, its island outline (the convex hull of circles) is edited: each
 	circle gets a knob above its centre (click to select it for the panel,
 	drag to move it) and a knob on its edge (drag to change its radius), plus
-	a ring showing the circle. With one of its arms selected, a knob at the
-	arm's mouth drags it round the roundabout. Knobs float above the road so
-	they stay clear of the roundabout's own move handle at its centre.
+	a ring showing the circle. Each ring section boundary gets a knob over
+	the ring (click to select that section for the panel, drag to move it
+	round). With one of its arms selected, a knob at the arm's mouth drags
+	it round the roundabout. Knobs float above the road so they stay clear
+	of the roundabout's own move handle at its centre.
 ]]
 
 local Packages = script.Parent.Parent.Parent.Packages
@@ -27,6 +29,7 @@ local CORNER_COLOR = Color3.fromRGB(240, 240, 240)
 local SELECTED_COLOR = Color3.fromRGB(255, 200, 60)
 local RADIUS_COLOR = Color3.fromRGB(110, 210, 255)
 local RING_COLOR = Color3.fromRGB(110, 210, 255)
+local BOUNDARY_COLOR = Color3.fromRGB(255, 140, 60)
 
 local IslandShapeHandles = {}
 IslandShapeHandles.__index = IslandShapeHandles
@@ -45,6 +48,10 @@ export type Roundabout = {
 	Arm: number?,
 	ArmAngle: number?,
 	ArmKnob: Vector3?,
+	-- Its ring sections' boundaries (local knob positions, over the middle
+	-- of the ring, and angles in degrees), and the selected one, if any
+	Boundaries: { { Index: number, Angle: number, Knob: Vector3 } },
+	SelectedSection: number?,
 }
 
 export type Props = {
@@ -56,6 +63,10 @@ export type Props = {
 	SetCornerRadius: (index: number, radius: number) -> (),
 	-- Move an arm around the roundabout to an angle (degrees)
 	MoveArm: (index: number, angle: number) -> (),
+	-- Select a ring section by its boundary, and move a boundary round to an
+	-- angle (degrees)
+	SelectSection: (index: number) -> (),
+	MoveSection: (index: number, angle: number) -> (),
 	EndEdit: () -> (),
 }
 
@@ -91,6 +102,18 @@ function IslandShapeHandles:update(draggerToolModel, selectionInfo)
 			Radius = CORNER_RADIUS * scale,
 		}
 		return
+	end
+	for _, boundary in roundabout.Boundaries do
+		local ground = roundabout.Pivot * boundary.Knob
+		local scale = self._draggerContext:getHandleScale(ground)
+		self._handles["Boundary" .. boundary.Index] = {
+			Kind = "Boundary",
+			Index = boundary.Index,
+			Angle = boundary.Angle,
+			Position = ground + Vector3.yAxis * (CORNER_LIFT * scale),
+			Ground = ground,
+			Radius = CORNER_RADIUS * scale,
+		}
 	end
 	for index, circle in roundabout.Circles do
 		local centre = roundabout.Pivot * Vector3.new(circle.X, 0, circle.Z)
@@ -140,7 +163,11 @@ function IslandShapeHandles:render(hoveredHandleId)
 		local hovered = handleId == hoveredHandleId or handleId == self._dragging
 		local color = if handle.Kind == "Radius"
 			then RADIUS_COLOR
-			elseif handle.Kind == "Arm" or handle.Index == roundabout.Selected then SELECTED_COLOR
+			elseif handle.Kind == "Arm" then SELECTED_COLOR
+			elseif handle.Kind == "Boundary" then (if handle.Index == roundabout.SelectedSection
+				then SELECTED_COLOR
+				else BOUNDARY_COLOR)
+			elseif handle.Index == roundabout.Selected then SELECTED_COLOR
 			else CORNER_COLOR
 		children[handleId] = Roact.createElement("SphereHandleAdornment", {
 			Adornee = workspace.Terrain,
@@ -151,7 +178,7 @@ function IslandShapeHandles:render(hoveredHandleId)
 			AlwaysOnTop = true,
 			ZIndex = 1,
 		})
-		if handle.Kind == "Arm" then
+		if handle.Kind == "Arm" or handle.Kind == "Boundary" then
 			children[handleId .. "Stem"] = Roact.createElement("CylinderHandleAdornment", {
 				Adornee = workspace.Terrain,
 				CFrame = CFrame.lookAt((handle.Position + handle.Ground) / 2, handle.Ground),
@@ -237,10 +264,13 @@ function IslandShapeHandles:mouseDown(mouseRay, handleId)
 	self._pivot = roundabout.Pivot
 	-- Drag relative to where the knob was grabbed, so it doesn't jump
 	self._grabX, self._grabZ = x, z
-	if handle.Kind == "Arm" then
+	if handle.Kind == "Arm" or handle.Kind == "Boundary" then
 		self._centroidX, self._centroidZ = roundabout.CentroidX, roundabout.CentroidZ
-		self._startAngle = roundabout.ArmAngle or 0
+		self._startAngle = if handle.Kind == "Arm" then roundabout.ArmAngle or 0 else handle.Angle
 		self._grabAngle = math.deg(math.atan2(z - roundabout.CentroidZ, x - roundabout.CentroidX))
+		if handle.Kind == "Boundary" then
+			self._props.SelectSection(handle.Index)
+		end
 	else
 		local circle = roundabout.Circles[handle.Index]
 		self._startX, self._startZ, self._startRadius = circle.X, circle.Z, circle.Radius
@@ -257,11 +287,16 @@ function IslandShapeHandles:mouseDrag(mouseRay)
 	if not x or not z then
 		return
 	end
-	if self._kind == "Arm" then
+	if self._kind == "Arm" or self._kind == "Boundary" then
 		-- Round the island's centroid, by how far the mouse has turned
 		local angle = math.deg(math.atan2(z - self._centroidZ, x - self._centroidX))
 		local turned = (angle - self._grabAngle + 180) % 360 - 180
-		self._props.MoveArm(self._index, math.round((self._startAngle + turned) * 2) / 2 % 360)
+		local moved = math.round((self._startAngle + turned) * 2) / 2 % 360
+		if self._kind == "Arm" then
+			self._props.MoveArm(self._index, moved)
+		else
+			self._props.MoveSection(self._index, moved)
+		end
 	elseif self._kind == "Corner" then
 		self._props.MoveCorner(
 			self._index,

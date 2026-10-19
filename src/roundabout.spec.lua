@@ -4,10 +4,11 @@ local RoadMath = require("./RoadMath")
 
 --[[
 	Roundabouts built from the packaged generator: a round one with four
-	arms, and a rounded rectangle with a truck apron and uneven arms. Checks
-	that they generate (island, markings, apron), that every arm's road end
-	is where RoadMath puts it, and takes a screenshot so the shapes, mouths
-	and splitter islands can be judged by eye.
+	arms, a rounded rectangle with a truck apron and uneven arms, and an oval
+	whose ring's lane count changes on the way round. Checks that they
+	generate (island, markings, apron), that every arm's road end is where
+	RoadMath puts it, and takes a screenshot so the shapes, mouths, splitter
+	islands and ring sections can be judged by eye.
 ]]
 
 local ISLAND_COLOR = Color3.fromRGB(76, 112, 44)
@@ -65,14 +66,21 @@ return function(t: TestTypes.TestContext)
 		-- arrows, an exit-only arm, an arm off at an odd angle, and a longer
 		-- arm skewed 25 degrees with a flare and automatic arrows
 		rectangle.Arms = "0,1,2,0,0,1,L/A/AR;100,1,1;200,1,0;300,2,1,180,25,1"
+		-- An oval ring of two lanes, three from beside one arm (gained on the
+		-- outside) and back to two by the island (dropped on the inside)
+		local sectioned = table.clone(base)
+		sectioned.IslandShape = "-60,0,45;60,0,45"
+		sectioned.Arms = "0,1,1;120,2,2,0,0,1;240,1,1"
+		sectioned.RingSections = "60,3;200,2,In"
 		local models = {
 			buildRoundabout(round, CFrame.new(origin + Vector3.new(-200, 0, 0))),
 			buildRoundabout(rectangle, CFrame.new(origin + Vector3.new(220, 0, 0))),
+			buildRoundabout(sectioned, CFrame.new(origin + Vector3.new(0, 0, 420))),
 		}
 
 		local camera = workspace.CurrentCamera
 		local previousCFrame = camera.CFrame
-		camera.CFrame = CFrame.lookAt(origin + Vector3.new(0, 700, -1), origin)
+		camera.CFrame = CFrame.lookAt(origin + Vector3.new(0, 900, 179), origin + Vector3.new(0, 0, 180))
 
 		local ok, err = pcall(function()
 			for _, model in models do

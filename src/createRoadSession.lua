@@ -106,6 +106,18 @@ export type SelectionState = {
 	ArmArrows: { string }?,
 	ArmArrowsAuto: boolean?,
 	FlareLength: number?,
+	-- Ring sections: how many boundaries (0 for the same lanes all the way
+	-- round), the selected one, its lanes, angle and side, whether its lane
+	-- change was moved or couldn't be kept clear of the arms' mouths, and
+	-- how long lane changes are
+	RingSections: number?,
+	SelectedSection: number?,
+	SectionLanes: number?,
+	SectionAngle: number?,
+	SectionSide: string?,
+	SectionMoved: boolean?,
+	SectionClear: boolean?,
+	RingTaperLength: number?,
 	SplitterStyle: string?,
 	LaneWidth: number,
 	SidewalkWidth: number,
@@ -245,6 +257,8 @@ local GEOMETRY_ATTRIBUTES = {
 	-- Roundabout layout and island
 	IslandShape = true,
 	RingLanes = true,
+	RingSections = true,
+	RingTaperLength = true,
 	Arms = true,
 	ArmLength = true,
 	SplitterWidth = true,
@@ -1193,6 +1207,7 @@ local function createRoadSession(plugin: Plugin)
 		newModel:SetAttribute("Arms", `0,{arm};90,{arm};180,{arm};270,{arm}`)
 		newModel:SetAttribute("IslandShape", `0,0,{RoadDefaults.RoundaboutIslandRadius}`)
 		newModel:SetAttribute("RingLanes", RoadDefaults.RoundaboutRingLanes)
+		newModel:SetAttribute("RingSections", "")
 		local layout = RoadMath.roundaboutLayout(newModel);
 		(newModel :: any).Size = RoadMath.roundaboutSize(layout)
 
@@ -1663,6 +1678,9 @@ local function createRoadSession(plugin: Plugin)
 	-- ("corners") are edited with IslandShapeHandles and the panel; one
 	-- corner at a time can be selected, for the panel to act on.
 	local selectedCorner: { Model: Model, Index: number }? = nil
+	-- Likewise one of its ring sections (by its boundary), edited with the
+	-- boundary knobs and the panel
+	local selectedSection: { Model: Model, Index: number }? = nil
 
 	-- The selected roundabout (its centre or one of its arms), and the
 	-- selected arm's index if it's an arm
@@ -1704,6 +1722,42 @@ local function createRoadSession(plugin: Plugin)
 			return corner.Index
 		end
 		return nil
+	end
+
+	local function getSelectedSectionIndex(model: Model, layout: RoadMath.RoundaboutLayout): number?
+		local section = selectedSection
+		if section and section.Model == model and section.Index <= #layout.Sections then
+			return section.Index
+		end
+		return nil
+	end
+
+	-- The ring sections as attribute data, for editing
+	local function sectionSpecs(layout: RoadMath.RoundaboutLayout): { RoadMath.RingSectionSpec }
+		local specs = {}
+		for _, section in layout.Sections do
+			table.insert(specs, { Angle = section.Angle, Lanes = section.Lanes, Side = section.Side })
+		end
+		return specs
+	end
+
+	-- The middle of the widest gap between angles (degrees)
+	local function widestGapAngle(angles: { number }): number
+		local sorted = {}
+		for _, angle in angles do
+			table.insert(sorted, angle % 360)
+		end
+		table.sort(sorted)
+		local best = 0
+		local widest = -1
+		for i, current in sorted do
+			local nextAngle = if i < #sorted then sorted[i + 1] else sorted[1] + 360
+			if nextAngle - current > widest then
+				widest = nextAngle - current
+				best = (current + widest / 2) % 360
+			end
+		end
+		return best
 	end
 
 	-- Size a roundabout's box to its layout (its pivot stays at the centre
@@ -1753,6 +1807,18 @@ local function createRoadSession(plugin: Plugin)
 		reseatConnectedEnds(model, dragConnections)
 		changeSignal:Fire()
 	end
+	local function moveSection(index: number, angle: number)
+		local model, layout = getSelectedRoundabout()
+		if not model or not layout or not layout.Sections[index] then
+			return
+		end
+		local sections = sectionSpecs(layout)
+		sections[index].Angle = angle
+		model:SetAttribute("RingSections", RoadMath.serializeRingSections(sections))
+		fitRoundaboutSize(model)
+		reseatConnectedEnds(model, dragConnections)
+		changeSignal:Fire()
+	end
 	local function moveArm(index: number, angle: number)
 		local model, layout = getSelectedRoundabout()
 		if not model or not layout or not layout.Arms[index] then
@@ -1781,20 +1847,9 @@ local function createRoadSession(plugin: Plugin)
 			-- In the middle of the widest gap between the arms
 			local angles = {}
 			for _, spec in specs do
-				table.insert(angles, spec.Angle % 360)
+				table.insert(angles, spec.Angle)
 			end
-			table.sort(angles)
-			local angle = 0
-			if #angles > 0 then
-				local widest = -1
-				for i, current in angles do
-					local nextAngle = if i < #angles then angles[i + 1] else angles[1] + 360
-					if nextAngle - current > widest then
-						widest = nextAngle - current
-						angle = (current + widest / 2) % 360
-					end
-				end
-			end
+			local angle = widestGapAngle(angles)
 			table.insert(specs, { Angle = angle, Exit = 1, Entry = 1, Length = 0, Skew = 0, Flare = 0, Arrows = "" })
 			model:SetAttribute("Arms", RoadMath.serializeArms(specs))
 			fitRoundaboutSize(model)
@@ -1906,6 +1961,84 @@ local function createRoadSession(plugin: Plugin)
 			writeIslandShape(model, circles)
 		elseif action == "RingLanes" then
 			model:SetAttribute("RingLanes", math.max(math.round(value), 1))
+			fitRoundaboutSize(model)
+		elseif action == "AddSection" then
+			local sections = sectionSpecs(layout)
+			local sectionIndex = getSelectedSectionIndex(model, layout)
+			if #sections == 0 then
+				-- Split the ring in two, across from each other, in the
+				-- middle of the widest gap between the arms: no change yet,
+				-- until one is given more or fewer lanes
+				local angles = {}
+				for _, spec in specs do
+					table.insert(angles, spec.Angle)
+				end
+				local angle = widestGapAngle(angles)
+				sections = {
+					{ Angle = angle, Lanes = layout.RingLanes, Side = "Out" :: "Out" },
+					{ Angle = (angle + 180) % 360, Lanes = layout.RingLanes, Side = "Out" :: "Out" },
+				}
+				selectedSection = { Model = model, Index = 1 }
+			elseif #sections < RoadMath.MAX_RING_SECTIONS then
+				-- Split the selected section (or the first) halfway to the
+				-- next boundary on, in the direction of travel
+				local from = sectionIndex or 1
+				local fromPosition = layout.Sections[from].Position
+				local gap = layout.RingLength
+				for i, section in layout.Sections do
+					local ahead = (section.Position - fromPosition) % layout.RingLength
+					if i ~= from and ahead > 1e-6 and ahead < gap then
+						gap = ahead
+					end
+				end
+				-- Positions run clockwise from above when driving on the left,
+				-- as angles do, and the other way when driving on the right
+				local travel = if model:GetAttribute("DriveSide") == "Right" then -1 else 1
+				local degrees = 360 * gap / layout.RingLength
+				local copy = sections[from]
+				table.insert(sections, {
+					Angle = (copy.Angle + travel * degrees / 2) % 360,
+					Lanes = copy.Lanes,
+					Side = copy.Side,
+				})
+				selectedSection = { Model = model, Index = #sections }
+			end
+			selectedCorner = nil
+			model:SetAttribute("RingSections", RoadMath.serializeRingSections(sections))
+			fitRoundaboutSize(model)
+		elseif action == "RemoveSection" then
+			local sections = sectionSpecs(layout)
+			local sectionIndex = getSelectedSectionIndex(model, layout)
+			if sectionIndex then
+				table.remove(sections, sectionIndex)
+				if #sections <= 1 then
+					-- One boundary left is the same lanes all the way round
+					if sections[1] then
+						model:SetAttribute("RingLanes", sections[1].Lanes)
+					end
+					sections = {}
+				end
+				model:SetAttribute("RingSections", RoadMath.serializeRingSections(sections))
+				fitRoundaboutSize(model)
+				selectedSection = nil
+			end
+		elseif action == "SectionLanes" or action == "SectionSide" or action == "SectionAngle" then
+			local sections = sectionSpecs(layout)
+			local sectionIndex = getSelectedSectionIndex(model, layout)
+			if sectionIndex then
+				local section = sections[sectionIndex]
+				if action == "SectionLanes" then
+					section.Lanes = math.max(math.round(value), 1)
+				elseif action == "SectionSide" then
+					section.Side = if value == "In" then "In" else "Out"
+				else
+					section.Angle = value % 360
+				end
+				model:SetAttribute("RingSections", RoadMath.serializeRingSections(sections))
+				fitRoundaboutSize(model)
+			end
+		elseif action == "RingTaperLength" then
+			model:SetAttribute("RingTaperLength", math.max(value, 1))
 			fitRoundaboutSize(model)
 		elseif action == "LaneWidth" or action == "SidewalkWidth" or action == "ApronWidth" then
 			model:SetAttribute(action, math.max(value, 0))
@@ -2102,7 +2235,21 @@ local function createRoadSession(plugin: Plugin)
 				end
 				local centroidX, centroidZ = RoadMath.islandCentroid(layout.Circles)
 				local arm = if armIndex then layout.Arms[armIndex] else nil
+				-- Section boundaries' knobs, over the middle of the ring
+				local boundaries = {}
+				if not armIndex then
+					for index, section in layout.Sections do
+						local across = section.Width / 2
+						table.insert(boundaries, {
+							Index = index,
+							Angle = section.Angle,
+							Knob = Vector3.new(section.X + section.NX * across, 0, section.Z + section.NZ * across),
+						})
+					end
+				end
 				return {
+					Boundaries = boundaries,
+					SelectedSection = getSelectedSectionIndex(model, layout),
 					Model = model,
 					Pivot = model:GetPivot(),
 					Circles = layout.Circles,
@@ -2120,9 +2267,21 @@ local function createRoadSession(plugin: Plugin)
 				local model = getSelectedRoundabout()
 				if model then
 					selectedCorner = { Model = model, Index = index }
+					selectedSection = nil
 					changeSignal:Fire()
 				end
 			end,
+			SelectSection = function(index: number)
+				local model = getSelectedRoundabout()
+				local current = selectedSection
+				-- (Idempotent: the framework repeats mouseDown)
+				if model and not (current and current.Model == model and current.Index == index) then
+					selectedSection = { Model = model, Index = index }
+					selectedCorner = nil
+					changeSignal:Fire()
+				end
+			end,
+			MoveSection = moveSection,
 			StartEdit = startIslandEdit,
 			MoveCorner = function(index: number, x: number, z: number)
 				editCorner(index, function(circle)
@@ -2260,6 +2419,10 @@ local function createRoadSession(plugin: Plugin)
 			then getSelectedCornerIndex(selected.Segment.Model, roundabout)
 			else nil
 		local roundaboutArm = if roundabout then RoadMath.armIndex(selected.Id) else nil
+		local roundaboutSection = if roundabout and not roundaboutArm
+			then getSelectedSectionIndex(selected.Segment.Model, roundabout)
+			else nil
+		local roundaboutSectionInfo = if roundabout and roundaboutSection then roundabout.Sections[roundaboutSection] else nil
 		local canChangeLanes = RoadMath.supportsLaneChange(selected.Segment.Kind)
 		local sameLanes = not RoadMath.hasLaneChange(selected.Segment)
 		local lanesDiffer = false
@@ -2337,6 +2500,16 @@ local function createRoadSession(plugin: Plugin)
 				else nil,
 			ArmArrowsAuto = if roundabout and roundaboutArm then roundabout.Arms[roundaboutArm].Arrows == "" else nil,
 			FlareLength = if roundabout then roundabout.FlareLength else nil,
+			RingSections = if roundabout then #roundabout.Sections else nil,
+			SelectedSection = roundaboutSection,
+			SectionLanes = if roundaboutSectionInfo then roundaboutSectionInfo.Lanes else nil,
+			SectionAngle = if roundaboutSectionInfo then roundaboutSectionInfo.Angle else nil,
+			SectionSide = if roundaboutSectionInfo then roundaboutSectionInfo.Side else nil,
+			SectionMoved = if roundaboutSectionInfo
+				then math.abs(roundaboutSectionInfo.Start - roundaboutSectionInfo.Position) > 1e-3
+				else nil,
+			SectionClear = if roundaboutSectionInfo then roundaboutSectionInfo.Clear else nil,
+			RingTaperLength = if roundabout then roundabout.RingTaperLength else nil,
 			SplitterStyle = if roundabout then roundabout.SplitterStyle else nil,
 			LaneWidth = (selected.Segment.Model:GetAttribute("LaneWidth" .. laneAxisSuffix) :: number?) or RoadDefaults.LaneWidth,
 			SidewalkWidth = (selected.Segment.Model:GetAttribute("SidewalkWidth") :: number?) or RoadDefaults.SidewalkWidth,
@@ -2757,6 +2930,7 @@ local function createRoadSession(plugin: Plugin)
 		end
 		newModel:SetAttribute("IslandShape", ISLAND_SHAPES.Circle)
 		newModel:SetAttribute("RingLanes", RoadDefaults.RoundaboutRingLanes)
+		newModel:SetAttribute("RingSections", "")
 		newModel:SetAttribute("Arms", RoadDefaults.RoundaboutArms)
 		fitRoundaboutSize(newModel)
 

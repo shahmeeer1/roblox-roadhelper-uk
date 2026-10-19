@@ -989,6 +989,26 @@ local function RoundaboutPanel(props: {
 			end,
 		})
 	end
+	local sectionSideChips: { [string]: any } = {
+		ListLayout = e("UIListLayout", {
+			FillDirection = Enum.FillDirection.Horizontal,
+			HorizontalAlignment = Enum.HorizontalAlignment.Left,
+			SortOrder = Enum.SortOrder.LayoutOrder,
+		}),
+		Corner = e("UICorner", {
+			CornerRadius = UDim.new(0, 4),
+		}),
+	}
+	for index, side in { { "Out", "Outside" }, { "In", "Inside" } } do
+		sectionSideChips[side[1]] = e(ChipForToggle, {
+			Text = side[2],
+			IsCurrent = state.SectionSide == side[1],
+			LayoutOrder = index,
+			OnClick = function()
+				props.RoundaboutAction("SectionSide", side[1])
+			end,
+		})
+	end
 	local function halfButton(text: string, order: number, disabled: boolean, onClick: () -> ())
 		return e("Frame", {
 			Size = UDim2.new(0.5, -2, 0, 0),
@@ -1243,18 +1263,124 @@ local function RoundaboutPanel(props: {
 				LayoutOrder = 3,
 			})
 			else nil,
-		RingLanes = numberField(
-			"Ring Lanes",
-			"Lanes on the circulating carriageway (all one way: clockwise when driving on the left).",
-			4,
-			state.RingLanes,
-			1,
-			"RingLanes"
-		),
+		RingLanes = if state.RingSections == 0
+			then numberField(
+				"Ring Lanes",
+				"Lanes on the circulating carriageway (all one way: clockwise when driving on the left). Split the ring below to vary them on the way round.",
+				4,
+				state.RingLanes,
+				1,
+				"RingLanes"
+			)
+			else nil,
+		SectionButtons = e(HelpGui.WithHelpIcon, {
+			Help = e(HelpGui.BasicTooltip, {
+				HelpRichText = "Vary the ring's lanes on the way round. <b>Split Ring</b> adds two boundaries (orange knobs over the ring); each sets the lanes from there on in the direction of travel, up to the next. <b>Add Section</b> splits the selected section in two. The ring's outer edge follows its lanes.",
+			}),
+			LayoutOrder = 5,
+			Subject = e("Frame", {
+				Size = UDim2.new(1, 0, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				BackgroundTransparency = 1,
+			}, {
+				ListLayout = e("UIListLayout", {
+					SortOrder = Enum.SortOrder.LayoutOrder,
+					FillDirection = Enum.FillDirection.Horizontal,
+					Padding = UDim.new(0, 4),
+				}),
+				Add = halfButton(
+					if state.RingSections == 0 then "Split Ring" else "Add Section",
+					1,
+					state.RingSections >= RoadMath.MAX_RING_SECTIONS,
+					function()
+						props.RoundaboutAction("AddSection")
+					end
+				),
+				Remove = halfButton("Remove Section", 2, state.SelectedSection == nil, function()
+					props.RoundaboutAction("RemoveSection")
+				end),
+			}),
+		}),
+		SectionHint = if state.RingSections > 0 and not state.SelectedSection
+			then e("TextLabel", {
+				Size = UDim2.new(1, 0, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				BackgroundTransparency = 1,
+				TextColor3 = Colors.OFFWHITE,
+				Text = "Click an orange knob over the ring to select a section.",
+				TextWrapped = true,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				Font = Enum.Font.SourceSans,
+				TextSize = 16,
+				LayoutOrder = 6,
+			})
+			else nil,
+		SectionLanes = if state.SelectedSection
+			then numberField(
+				`Section {state.SelectedSection} Lanes`,
+				"Lanes on the ring from the selected boundary on, in the direction of travel, up to the next boundary.",
+				7,
+				state.SectionLanes,
+				1,
+				"SectionLanes"
+			)
+			else nil,
+		SectionPosition = if state.SelectedSection
+			then numberField(
+				"Boundary Position",
+				"Where the selected section starts, as an angle around the island in degrees. You can also drag its orange knob.",
+				8,
+				state.SectionAngle,
+				-360,
+				"SectionAngle"
+			)
+			else nil,
+		SectionSide = if state.SelectedSection
+			then e(HelpGui.WithHelpIcon, {
+				Help = e(HelpGui.BasicTooltip, {
+					HelpRichText = "Which side of the ring the selected section's extra lane appears (or its dropped lane ends):"
+						.. "\n\u{2022} <b>Outside</b>: on the outer side, as when a lane is added for an exit."
+						.. "\n\u{2022} <b>Inside</b>: next to the island, as when a lane is added for turning right.",
+				}),
+				LayoutOrder = 9,
+				Subject = e("Frame", {
+					Size = UDim2.new(1, 0, 0, 0),
+					BorderSizePixel = 0,
+					BackgroundColor3 = Colors.ACTION_BLUE,
+					AutomaticSize = Enum.AutomaticSize.Y,
+				}, sectionSideChips),
+			})
+			else nil,
+		SectionWarning = if state.SelectedSection and (state.SectionMoved or not state.SectionClear)
+			then e("TextLabel", {
+				Size = UDim2.new(1, 0, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				BackgroundTransparency = 1,
+				TextColor3 = Colors.OFFWHITE,
+				Text = if not state.SectionClear
+					then "This lane change doesn't fit between the arms' mouths, so the kerbs beside it won't meet the ring cleanly. Move the boundary or shorten the Lane Change Length."
+					else "This lane change has been moved clear of an arm's mouth, where the ring's width has to stay steady.",
+				TextWrapped = true,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				Font = Enum.Font.SourceSans,
+				TextSize = 16,
+				LayoutOrder = 10,
+			})
+			else nil,
+		RingTaperLength = if state.RingSections > 0
+			then numberField(
+				"Lane Change Length",
+				"How far round the ring each change in its lane count takes, in studs (shortened where boundaries are close together).",
+				11,
+				state.RingTaperLength,
+				1,
+				"RingTaperLength"
+			)
+			else nil,
 		LaneWidth = numberField(
 			"Lane Width",
 			"Width of each circulating lane in studs.",
-			5,
+			15,
 			state.LaneWidth,
 			1,
 			"LaneWidth"
@@ -1262,7 +1388,7 @@ local function RoundaboutPanel(props: {
 		SidewalkWidth = numberField(
 			"Footway Width",
 			"Width of the footway around the outside, in studs. Zero leaves none.",
-			6,
+			16,
 			state.SidewalkWidth,
 			0,
 			"SidewalkWidth"
@@ -1270,7 +1396,7 @@ local function RoundaboutPanel(props: {
 		ApronWidth = numberField(
 			"Apron Width",
 			"A raised apron around the island that long vehicles can run over, with a low kerb (common on UK roundabouts). Zero leaves none.",
-			7,
+			17,
 			state.ApronWidth,
 			0,
 			"ApronWidth"
@@ -1279,7 +1405,7 @@ local function RoundaboutPanel(props: {
 			Size = UDim2.new(1, 0, 0, 0),
 			AutomaticSize = Enum.AutomaticSize.Y,
 			BackgroundTransparency = 1,
-			LayoutOrder = 8,
+			LayoutOrder = 18,
 		}, {
 			Button = e(OperationButton, {
 				Text = `Add Arm ({state.ArmCount} now)`,
@@ -1294,7 +1420,7 @@ local function RoundaboutPanel(props: {
 		ArmLength = numberField(
 			"Arm Length",
 			"How far every arm runs out from the ring before its road end, in studs.",
-			9,
+			19,
 			state.ArmLength,
 			1,
 			"ArmLength"
@@ -1302,7 +1428,7 @@ local function RoundaboutPanel(props: {
 		SplitterWidth = numberField(
 			"Splitter Width",
 			"Width of the splitter island between each arm's entry and exit lanes at the ring, in studs. It tapers away along the arm, hatched ahead of its kerbed nose. Zero leaves just a centre line.",
-			10,
+			20,
 			state.SplitterWidth,
 			0,
 			"SplitterWidth"
@@ -1312,7 +1438,7 @@ local function RoundaboutPanel(props: {
 				HelpRichText = "\u{2022} <b>Kerbed</b>: a raised splitter island, with hatching ahead of its nose."
 					.. "\n\u{2022} <b>Hatched</b>: painted hatching only, for tighter or rural junctions.",
 			}),
-			LayoutOrder = 11,
+			LayoutOrder = 21,
 			Subject = e("Frame", {
 				Size = UDim2.new(1, 0, 0, 0),
 				BorderSizePixel = 0,
@@ -1323,7 +1449,7 @@ local function RoundaboutPanel(props: {
 		EntryKerbRadius = numberField(
 			"Kerb Radius",
 			"Radius of the kerbs curving from each arm into the ring, in studs.",
-			12,
+			22,
 			state.EntryKerbRadius,
 			1,
 			"EntryKerbRadius"
@@ -1331,7 +1457,7 @@ local function RoundaboutPanel(props: {
 		FlareLength = numberField(
 			"Flare Length",
 			"How far out from the ring the arms' entry flares reach, in studs (an arm's Flare Lanes run full width for the first half, then taper away).",
-			13,
+			23,
 			state.FlareLength,
 			1,
 			"FlareLength"
