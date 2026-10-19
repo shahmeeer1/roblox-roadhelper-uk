@@ -19,6 +19,7 @@
 local CoreGui = game:GetService("CoreGui")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 local Selection = game:GetService("Selection")
 
 local Packages = script.Parent.Parent.Packages
@@ -2010,7 +2011,14 @@ local function createRoadSession(plugin: Plugin)
 	-- Something changed that the viewport shows (the line being drawn, the
 	-- selection): redraw it as well as the panel. (During a press this waits
 	-- for EndPress, which nudges the dragger itself.)
+	local markingPressActive = false
 	local function markingRefresh()
+		-- (A press whose release never arrived, say because the mouse was let
+		-- go outside the viewport, must not hold the dragger frozen)
+		if markingPressActive and not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+			markingPressActive = false
+			gestureActive = false
+		end
 		updateDragger()
 		changeSignal:Fire()
 	end
@@ -2136,8 +2144,7 @@ local function createRoadSession(plugin: Plugin)
 			clearSelection()
 		end
 		markingMode = on
-		updateDragger()
-		changeSignal:Fire()
+		markingRefresh()
 	end
 
 	-- Edit the selected line's points (world space) in place
@@ -2180,9 +2187,11 @@ local function createRoadSession(plugin: Plugin)
 		end,
 		SelectLine = selectLine,
 		BeginPress = function()
+			markingPressActive = true
 			gestureActive = true
 		end,
 		EndPress = function()
+			markingPressActive = false
 			gestureActive = false
 			updateDragger()
 			changeSignal:Fire()

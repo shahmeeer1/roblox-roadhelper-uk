@@ -384,11 +384,20 @@ function MarkingHandles:mouseDrag(mouseRay)
 end
 
 function MarkingHandles:mouseUp(mouseRay)
+	-- However the click goes, the press must end, or the dragger stays held
+	-- (frozen) for good
+	local ok, err = pcall(self._finishPress, self, mouseRay)
+	self._props.EndPress()
+	if not ok then
+		warn("RoadHelper: Draw Markings click failed: " .. tostring(err))
+	end
+end
+
+function MarkingHandles:_finishPress(mouseRay)
 	local props = self._props
 	if self._dragging then
 		self._dragging = nil
 		props.EndEdit(self._changed)
-		props.EndPress()
 		return
 	end
 	local id, hover, hoverLine = self._pressId, self._pressHover, self._pressHoverLine
@@ -422,7 +431,6 @@ function MarkingHandles:mouseUp(mouseRay)
 	elseif id == "Sky" then
 		props.SelectLine(nil, nil)
 	end
-	props.EndPress()
 end
 
 function MarkingHandles:keyDown(keyCode): boolean
