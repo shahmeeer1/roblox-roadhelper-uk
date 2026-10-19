@@ -283,8 +283,12 @@ function MarkingHandles:render(hoveredHandleId)
 		if #zone.SideA > 0 then
 			drawPath("ZoneSideA", Markings.samplePath(zone.SideA, curved), SELECTED_COLOR, zone.SideA[1])
 			if #points >= 2 then
-				for index, line in Markings.laneZoneLines(zone.SideA, points, zone.Lanes, false, curved) do
-					drawPath("ZoneLane" .. index .. "_", Markings.samplePath(line.Points, curved), HOVER_COLOR, line.Points[1])
+				-- (A preview that fails mustn't take the rest of the drawing with it)
+				local ok, lines = pcall(Markings.laneZoneLines, zone.SideA, points, zone.Lanes, false, curved)
+				if ok then
+					for index, line in lines do
+						drawPath("ZoneLane" .. index .. "_", Markings.samplePath(line.Points, curved), HOVER_COLOR, line.Points[1])
+					end
 				end
 			end
 		end

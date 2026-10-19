@@ -139,6 +139,15 @@ return function(t: TestTypes.TestContext)
 			end
 		end
 
+		-- A side with no length (the cursor still on the point just placed)
+		-- doesn't break the zone: it just gives lines that fan in to a point
+		local pinched = Markings.laneZoneLines(
+			{ Vector3.new(0, 0, 0), Vector3.new(100, 0, 0) },
+			{ Vector3.new(0, 0, 30), Vector3.new(0, 0, 30) },
+			3, false, true
+		)
+		t.expect(#pinched).toBe(2)
+
 		-- One lane needs no dividers; edges come only when asked for
 		t.expect(#Markings.laneZoneLines(arc(60), arc(108), 1, false, true)).toBe(0)
 		local edged = Markings.laneZoneLines(arc(60), arc(108), 2, true, true)

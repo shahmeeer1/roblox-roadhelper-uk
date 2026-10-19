@@ -435,7 +435,7 @@ end
 -- A path resampled into `count` points at equal distances along it, ends
 -- included
 function Markings.resamplePath(path: { Vector3 }, count: number): { Vector3 }
-	if #path < 2 or count < 2 then
+	if #path == 0 or count < 2 then
 		return table.clone(path)
 	end
 	local cumulative = { 0 }
@@ -444,7 +444,13 @@ function Markings.resamplePath(path: { Vector3 }, count: number): { Vector3 }
 	end
 	local total = cumulative[#path]
 	if total < 1e-6 then
-		return table.clone(path)
+		-- (No length at all, say a point just placed with the cursor still on
+		-- it: `count` copies of the one point, so sides still match up)
+		local result = {}
+		for _ = 1, count do
+			table.insert(result, path[1])
+		end
+		return result
 	end
 	local result = {}
 	local segment = 1
