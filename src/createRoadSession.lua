@@ -7,6 +7,8 @@
 	- EndpointMoveHandles: move the selected endpoint (resizes segments)
 	- EndpointRotateHandles: edit the Adjust dir/grade/bank angles
 	- AddHandles: append segments off an open endpoint
+	- MarkingHandles: drawing road markings by hand (Draw Markings mode,
+	  when the others step aside)
 
 	The session tracks the selected endpoint as a (model, endpoint id) pair and
 	re-derives world frames from live instance state, so external edits and
@@ -31,6 +33,7 @@ local DraggerToolComponent = (require :: any)(DraggerFramework.DraggerTools.Drag
 
 local RoadMath = require("./RoadMath")
 local RoadDefaults = require("./RoadDefaults")
+local Markings = require("./Markings")
 local EndpointPickHandles = require("./Handles/EndpointPickHandles")
 local DeleteExitHandles = require("./Handles/DeleteExitHandles")
 local PartialRotateHandleView = require("./Dragger/PartialRotateHandleView")
@@ -38,6 +41,7 @@ local EndpointMoveHandles = require("./Handles/EndpointMoveHandles")
 local EndpointRotateHandles = require("./Handles/EndpointRotateHandles")
 local AddHandles = require("./Handles/AddHandles")
 local IslandShapeHandles = require("./Handles/IslandShapeHandles")
+local MarkingHandles = require("./Handles/MarkingHandles")
 
 local REFRESH_INTERVAL = 0.25
 local JOINT_SEARCH_RADIUS = 10
@@ -116,6 +120,24 @@ export type SelectionState = {
 	-- size in excess of the roads' widths and crosswalks; exact at 90 degrees)
 	CornerRadius: number,
 	CrossingWidth: number,
+}
+
+-- The Draw Markings tool's state, for the panel: whether it's on, the line
+-- being drawn, the selected line and point, and the style options shown
+-- (the selected line's, or those new lines get)
+export type MarkingState = {
+	Active: boolean,
+	Drawing: boolean,
+	DraftPoints: number,
+	LineSelected: boolean,
+	PointCount: number,
+	SelectedPoint: number?,
+	Style: Markings.Style,
+	Colour: Markings.Colour,
+	Curved: boolean,
+	Width: number,
+	Dash: number,
+	Gap: number,
 }
 
 local function createFixedSelection(onCleared: () -> ())
@@ -601,6 +623,14 @@ local function createRoadSession(plugin: Plugin)
 		end
 	end
 
+	-- Abandon the recording, undoing what it recorded
+	local function cancelRecording()
+		if activeRecording then
+			ChangeHistoryService:FinishRecording(activeRecording, Enum.FinishRecordingOperation.Cancel)
+			activeRecording = nil
+		end
+	end
+
 	--------------------------------------------------------------------------
 	-- Edit operations
 	--------------------------------------------------------------------------
@@ -952,6 +982,14 @@ local function createRoadSession(plugin: Plugin)
 
 	-- Scan for a template on demand: this only happens on add clicks, never
 	-- per-frame, so a full workspace scan is acceptable.
+	-- A copy of a road to build a new one from, without any markings drawn on
+	-- it
+	local function cloneTemplate(model: Model): Model
+		local clone = model:Clone()
+		Markings.strip(clone)
+		return clone
+	end
+
 	local function findTemplate(kind: RoadMath.SegmentKind, near: Vector3?): RoadMath.SegmentInfo?
 		local best: RoadMath.SegmentInfo? = nil
 		local bestDistance = math.huge
@@ -981,7 +1019,7 @@ local function createRoadSession(plugin: Plugin)
 
 		local newModel: Model?
 		if template then
-			newModel = template.Model:Clone()
+			newModel = cloneTemplate(template.Model)
 			-- Keep the cloned geometry rather than clearing it: the engine
 			-- only regenerates on change events, so a clone whose parameters
 			-- all end up identical to the template's would otherwise stay
@@ -1063,7 +1101,7 @@ local function createRoadSession(plugin: Plugin)
 		local template = findTemplate("Intersection", openEnd.WorldCFrame.Position)
 		local newModel: Model?
 		if template then
-			newModel = template.Model:Clone()
+			newModel = cloneTemplate(template.Model)
 			-- Keep the cloned geometry rather than clearing it: the engine
 			-- only regenerates on change events, so a clone whose parameters
 			-- all end up identical to the template's would otherwise stay
@@ -1134,7 +1172,7 @@ local function createRoadSession(plugin: Plugin)
 		local template = findTemplate("Split", openEnd.WorldCFrame.Position)
 		local newModel: Model?
 		if template then
-			newModel = template.Model:Clone()
+			newModel = cloneTemplate(template.Model)
 			-- Keep the cloned geometry (see createJoinedIntersection)
 		else
 			newModel = createFallbackSegmentModel("Split")
@@ -1176,7 +1214,7 @@ local function createRoadSession(plugin: Plugin)
 		local template = findTemplate("Roundabout", openEnd.WorldCFrame.Position)
 		local newModel: Model?
 		if template then
-			newModel = template.Model:Clone()
+			newModel = cloneTemplate(template.Model)
 			-- Keep the cloned geometry (see createJoinedIntersection)
 		else
 			newModel = createFallbackSegmentModel("Roundabout")
@@ -1591,7 +1629,7 @@ local function createRoadSession(plugin: Plugin)
 		beginRecording("Add Segment")
 		local newModel: Model?
 		if template then
-			newModel = template.Model:Clone()
+			newModel = cloneTemplate(template.Model)
 			-- Keep the cloned geometry rather than clearing it: the engine
 			-- only regenerates on change events, so a clone whose parameters
 			-- all end up identical to the template's would otherwise stay
@@ -1933,10 +1971,317 @@ local function createRoadSession(plugin: Plugin)
 	end
 
 	--------------------------------------------------------------------------
+	-- Drawn markings
+	--------------------------------------------------------------------------
+
+	-- Draw Markings mode: MarkingHandles take over the viewport. The line
+	-- being drawn is a list of world points until it's finished, when it
+	-- becomes a real line on the road it was started on (see Markings).
+	local markingMode = false
+	local draft: { Vector3 } = {}
+	local draftParent: Instance? = nil
+	local selectedLine: Model? = nil
+	local selectedPoint: number? = nil
+	-- The style new lines get (the last one chosen)
+	local markingDefaults: Markings.Options = {
+		Style = "Dashed",
+		Colour = "White",
+		Curved = true,
+		Width = Markings.STYLE_DEFAULTS.Dashed.Width,
+		Dash = Markings.STYLE_DEFAULTS.Dashed.Dash,
+		Gap = Markings.STYLE_DEFAULTS.Dashed.Gap,
+	}
+
+	-- The selected line, if it still exists (undo can remove it)
+	local function getSelectedLine(): Model?
+		local line = selectedLine
+		if line and (not line:IsDescendantOf(workspace) or not Markings.isLine(line)) then
+			selectedLine, selectedPoint = nil, nil
+			return nil
+		end
+		if line and selectedPoint and selectedPoint > #Markings.getWorldPoints(line) then
+			selectedPoint = nil
+		end
+		return line
+	end
+
+	local function selectLine(line: Model?, point: number?)
+		if selectedLine == line and selectedPoint == point then
+			return
+		end
+		selectedLine, selectedPoint = line, point
+		changeSignal:Fire()
+	end
+
+	local function startDraft(position: Vector3, surface: Instance)
+		-- On the road clicked, so it moves with it (else a markings folder)
+		local road = RoadMath.segmentFromDescendant(surface)
+		draftParent = if road then road.Model else nil
+		draft = { position }
+		selectedLine, selectedPoint = nil, nil
+		changeSignal:Fire()
+	end
+
+	local function cancelDraft()
+		draft = {}
+		draftParent = nil
+		changeSignal:Fire()
+	end
+
+	local function finishDraft()
+		if #draft < 2 then
+			cancelDraft()
+			return
+		end
+		local points = draft
+		local parent = draftParent
+		draft = {}
+		draftParent = nil
+		beginRecording("Draw Marking")
+		if not parent or not parent:IsDescendantOf(workspace) then
+			local folder = workspace:FindFirstChild("RoadMarkings")
+			if not folder then
+				folder = Instance.new("Folder")
+				folder.Name = "RoadMarkings"
+				folder.Parent = workspace
+			end
+			parent = folder
+		end
+		Markings.create(assert(parent), points, table.clone(markingDefaults))
+		finishRecording()
+		changeSignal:Fire()
+	end
+
+	local function setMarkingMode(on: boolean)
+		if markingMode == on then
+			return
+		end
+		if not on then
+			finishDraft()
+			selectedLine, selectedPoint = nil, nil
+		else
+			-- The endpoint handles step aside
+			clearSelection()
+		end
+		markingMode = on
+		updateDragger()
+		changeSignal:Fire()
+	end
+
+	-- Edit the selected line's points (world space) in place
+	local function editLinePoints(edit: ({ Vector3 }) -> ())
+		local line = getSelectedLine()
+		if not line then
+			return
+		end
+		local points = Markings.getWorldPoints(line)
+		edit(points)
+		Markings.setWorldPoints(line, points)
+	end
+
+	local markingHandles = MarkingHandles.new(draggerContext, {
+		IsActive = function()
+			return markingMode
+		end,
+		GetDraft = function()
+			return draft
+		end,
+		GetDraftCurved = function()
+			return markingDefaults.Curved
+		end,
+		StartDraft = startDraft,
+		AddDraftPoint = function(position: Vector3)
+			table.insert(draft, position)
+			changeSignal:Fire()
+		end,
+		FinishDraft = finishDraft,
+		CancelDraft = cancelDraft,
+		GetSelectedLine = getSelectedLine,
+		GetSelectedPoint = function()
+			return selectedPoint
+		end,
+		SelectLine = selectLine,
+		BeginPress = function()
+			gestureActive = true
+		end,
+		EndPress = function()
+			gestureActive = false
+			updateDragger()
+			changeSignal:Fire()
+		end,
+		StartEdit = function()
+			beginRecording("Edit Marking")
+		end,
+		MovePoint = function(index: number, position: Vector3)
+			editLinePoints(function(points)
+				if points[index] then
+					points[index] = position
+				end
+			end)
+		end,
+		InsertPoint = function(after: number, position: Vector3)
+			editLinePoints(function(points)
+				table.insert(points, math.clamp(after + 1, 1, #points + 1), position)
+			end)
+		end,
+		EndEdit = function(changed: boolean)
+			if changed then
+				finishRecording()
+			else
+				cancelRecording()
+			end
+		end,
+	})
+
+	-- Panel actions: on the line being drawn "Finish", "Cancel" and
+	-- "UndoPoint"; "Style", "Colour", "Curved", "Width", "Dash" and "Gap" set
+	-- the selected line's options (and new lines'); "RemovePoint" and
+	-- "Delete" act on the selected line, and "Deselect" deselects it
+	local function markingAction(action: string, value: any)
+		if action == "Finish" then
+			finishDraft()
+			return
+		elseif action == "Cancel" then
+			cancelDraft()
+			return
+		elseif action == "UndoPoint" then
+			table.remove(draft)
+			if #draft == 0 then
+				draftParent = nil
+			end
+			changeSignal:Fire()
+			return
+		elseif action == "Deselect" then
+			selectLine(nil, nil)
+			return
+		end
+		local defaults: any = markingDefaults
+		if action == "Style" and Markings.STYLE_DEFAULTS[value] then
+			-- A new style brings its own width and marks
+			local styleDefaults = Markings.STYLE_DEFAULTS[value]
+			defaults.Style = value
+			defaults.Width, defaults.Dash, defaults.Gap = styleDefaults.Width, styleDefaults.Dash, styleDefaults.Gap
+		elseif action == "Colour" then
+			defaults.Colour = if value == "Yellow" then "Yellow" else "White"
+		elseif action == "Curved" then
+			defaults.Curved = value == true
+		elseif action == "Width" then
+			defaults.Width = math.max(value, 0.05)
+		elseif action == "Dash" or action == "Gap" then
+			defaults[action] = math.max(value, 0)
+		end
+		local line = getSelectedLine()
+		if not line then
+			changeSignal:Fire()
+			return
+		end
+		if action == "Delete" then
+			beginRecording("Delete Marking")
+			line.Parent = nil
+			finishRecording()
+			selectedLine, selectedPoint = nil, nil
+		elseif action == "RemovePoint" then
+			local points = Markings.getWorldPoints(line)
+			if selectedPoint and #points > 2 then
+				beginRecording("Edit Marking")
+				table.remove(points, selectedPoint)
+				Markings.setWorldPoints(line, points)
+				finishRecording()
+				selectedPoint = nil
+			end
+		elseif action == "Style" or action == "Colour" or action == "Curved"
+			or action == "Width" or action == "Dash" or action == "Gap" then
+			beginRecording("Edit Marking")
+			if action == "Style" then
+				line:SetAttribute("Style", defaults.Style)
+				line:SetAttribute("Width", defaults.Width)
+				line:SetAttribute("Dash", defaults.Dash)
+				line:SetAttribute("Gap", defaults.Gap)
+			else
+				line:SetAttribute(action, defaults[action])
+			end
+			Markings.build(line)
+			finishRecording()
+		end
+		changeSignal:Fire()
+	end
+
+	local function getMarkingState(): MarkingState
+		local line = getSelectedLine()
+		local options = if line then Markings.getOptions(line) else markingDefaults
+		return {
+			Active = markingMode,
+			Drawing = #draft > 0,
+			DraftPoints = #draft,
+			LineSelected = line ~= nil,
+			PointCount = if line then #Markings.getWorldPoints(line) else 0,
+			SelectedPoint = if line then selectedPoint else nil,
+			Style = options.Style,
+			Colour = options.Colour,
+			Curved = options.Curved,
+			Width = options.Width,
+			Dash = options.Dash,
+			Gap = options.Gap,
+		}
+	end
+
+	-- The other handles step aside while drawing markings
+	local function hiddenWhileMarking(handles: any): any
+		local wrapper = {}
+		function wrapper.update(_, ...)
+			if handles.update then
+				handles:update(...)
+			end
+		end
+		function wrapper.shouldBiasTowardsObjects(_)
+			return handles:shouldBiasTowardsObjects()
+		end
+		function wrapper.hitTest(_, ...)
+			if markingMode then
+				return nil
+			end
+			return handles:hitTest(...)
+		end
+		function wrapper.render(_, ...)
+			if markingMode then
+				return Roact.createElement("Folder")
+			end
+			return handles:render(...)
+		end
+		function wrapper.mouseDown(_, ...)
+			return handles:mouseDown(...)
+		end
+		function wrapper.mouseDrag(_, ...)
+			return handles:mouseDrag(...)
+		end
+		function wrapper.mouseUp(_, ...)
+			return handles:mouseUp(...)
+		end
+		if handles.keyDown then
+			function wrapper.keyDown(_, ...)
+				if markingMode then
+					return false
+				end
+				return handles:keyDown(...)
+			end
+		end
+		if handles.keyUp then
+			function wrapper.keyUp(_, ...)
+				if markingMode then
+					return false
+				end
+				return handles:keyUp(...)
+			end
+		end
+		return wrapper
+	end
+
+	--------------------------------------------------------------------------
 	-- Handles
 	--------------------------------------------------------------------------
 
 	local handlesList = {
+		markingHandles,
 		EndpointMoveHandles.new(draggerContext, {
 			GetEndpointCFrame = function()
 				local endpoint = getSelectedEndpoint()
@@ -2179,6 +2524,11 @@ local function createRoadSession(plugin: Plugin)
 			end,
 		}),
 	}
+
+	-- (Everything but the marking handles steps aside while drawing markings)
+	for index = 2, #handlesList do
+		handlesList[index] = hiddenWhileMarking(handlesList[index])
+	end
 
 	local rootElement = Roact.createElement(DraggerToolComponent, {
 		Mouse = plugin:GetMouse(),
@@ -2671,7 +3021,7 @@ local function createRoadSession(plugin: Plugin)
 		beginRecording("Add Intersection")
 		local newModel: Model?
 		if template then
-			newModel = template.Model:Clone()
+			newModel = cloneTemplate(template.Model)
 			-- Keep the cloned geometry (see the other add paths)
 		else
 			newModel = createFallbackSegmentModel("Intersection")
@@ -2754,7 +3104,7 @@ local function createRoadSession(plugin: Plugin)
 		beginRecording("Add Roundabout")
 		local newModel: Model?
 		if template then
-			newModel = template.Model:Clone()
+			newModel = cloneTemplate(template.Model)
 			-- Keep the cloned geometry (see the other add paths)
 		else
 			newModel = createFallbackSegmentModel("Roundabout")
@@ -2804,8 +3154,15 @@ local function createRoadSession(plugin: Plugin)
 	-- "RemoveArm", "ArmExit", "ArmEntry", "ArmAngle", "ArmOwnLength", "ArmSkew"
 	session.RoundaboutAction = roundaboutAction
 
+	-- Draw Markings mode, its panel actions (see markingAction) and state
+	session.SetMarkingMode = setMarkingMode
+	session.MarkingAction = markingAction
+	session.GetMarkingState = getMarkingState
+
 	function session.Destroy()
 		sessionAlive = false
+		-- (A line still being drawn is dropped)
+		draft = {}
 		heartbeatCn:Disconnect()
 		undoCn:Disconnect()
 		redoCn:Disconnect()

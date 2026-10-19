@@ -112,6 +112,17 @@ return function(plugin: Plugin, panel: DockWidgetPluginGui, buttonClicked: Signa
 						session.RoundaboutAction(action, value)
 					end
 				end,
+				MarkingState = if session then session.GetMarkingState() else nil,
+				SetMarkingMode = function(on: boolean)
+					if session then
+						session.SetMarkingMode(on)
+					end
+				end,
+				MarkingAction = function(action: string, value: any)
+					if session then
+						session.MarkingAction(action, value)
+					end
+				end,
 				AddRoundabout = function()
 					if session then
 						local preset = Presets.ByKey[activeSettings.SelectedPreset]

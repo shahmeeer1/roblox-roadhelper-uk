@@ -18,6 +18,7 @@ local createRoadSession = require("./createRoadSession")
 local Presets = require("./Presets")
 local RoadDefaults = require("./RoadDefaults")
 local RoadMath = require("./RoadMath")
+local Markings = require("./Markings")
 local Settings = require("./Settings")
 
 local function createNextOrder(): () -> number
@@ -1388,6 +1389,257 @@ local function RoundaboutPanel(props: {
 	})
 end
 
+local MARKING_STYLE_LABELS: { [string]: string } = {
+	Dashed = "Dashed",
+	Solid = "Solid",
+	GiveWay = "Give Way",
+	Double = "Double",
+}
+
+local function MarkingsPanel(props: {
+	MarkingState: createRoadSession.MarkingState?,
+	SetMarkingMode: (on: boolean) -> (),
+	MarkingAction: (action: string, value: any) -> (),
+	LayoutOrder: number?,
+})
+	local state = props.MarkingState
+	if not state then
+		return nil :: any
+	end
+	local function hint(text: string, order: number)
+		return e("TextLabel", {
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			TextColor3 = Colors.OFFWHITE,
+			Text = text,
+			TextWrapped = true,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Font = Enum.Font.SourceSans,
+			TextSize = 16,
+			LayoutOrder = order,
+		})
+	end
+	local function button(text: string, order: number, color: Color3, onClick: () -> ())
+		return e("Frame", {
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			LayoutOrder = order,
+		}, {
+			Button = e(OperationButton, {
+				Text = text,
+				Height = 28,
+				Disabled = false,
+				Color = color,
+				OnClick = onClick,
+			}),
+		})
+	end
+	local function buttonRow(order: number, buttons: { { Text: string, Disabled: boolean, Color: Color3, OnClick: () -> () } })
+		local children: { [string]: any } = {
+			ListLayout = e("UIListLayout", {
+				SortOrder = Enum.SortOrder.LayoutOrder,
+				FillDirection = Enum.FillDirection.Horizontal,
+				Padding = UDim.new(0, 4),
+			}),
+		}
+		for index, info in buttons do
+			children["Button" .. index] = e("Frame", {
+				Size = UDim2.new(1 / #buttons, -4 * (#buttons - 1) / #buttons, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				BackgroundTransparency = 1,
+				LayoutOrder = index,
+			}, {
+				Button = e(OperationButton, {
+					Text = info.Text,
+					Height = 28,
+					Disabled = info.Disabled,
+					Color = info.Color,
+					OnClick = info.OnClick,
+				}),
+			})
+		end
+		return e("Frame", {
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			LayoutOrder = order,
+		}, children)
+	end
+	local function chips(order: number, help: string, choices: { { Value: any, Text: string } }, current: any, action: string)
+		local children: { [string]: any } = {
+			ListLayout = e("UIListLayout", {
+				FillDirection = Enum.FillDirection.Horizontal,
+				HorizontalAlignment = Enum.HorizontalAlignment.Left,
+				SortOrder = Enum.SortOrder.LayoutOrder,
+				Wraps = true,
+			}),
+			Corner = e("UICorner", {
+				CornerRadius = UDim.new(0, 4),
+			}),
+		}
+		for index, choice in choices do
+			children["Chip" .. index] = e(ChipForToggle, {
+				Text = choice.Text,
+				IsCurrent = current == choice.Value,
+				LayoutOrder = index,
+				OnClick = function()
+					props.MarkingAction(action, choice.Value)
+				end,
+			})
+		end
+		return e(HelpGui.WithHelpIcon, {
+			Help = e(HelpGui.BasicTooltip, {
+				HelpRichText = help,
+			}),
+			LayoutOrder = order,
+			Subject = e("Frame", {
+				Size = UDim2.new(1, 0, 0, 0),
+				BorderSizePixel = 0,
+				BackgroundColor3 = Colors.ACTION_BLUE,
+				AutomaticSize = Enum.AutomaticSize.Y,
+			}, children),
+		})
+	end
+	local function numberField(label: string, help: string, order: number, value: number, minimum: number, action: string)
+		return e(HelpGui.WithHelpIcon, {
+			Help = e(HelpGui.BasicTooltip, {
+				HelpRichText = help,
+			}),
+			LayoutOrder = order,
+			Subject = e(NumberInput, {
+				Label = label,
+				Value = value,
+				ValueEntered = function(entered: number): number?
+					local clamped = math.max(entered, minimum)
+					props.MarkingAction(action, clamped)
+					return clamped
+				end,
+			}),
+		})
+	end
+
+	if not state.Active then
+		return e(SubPanel, {
+			Title = "Road Markings",
+			Padding = UDim.new(0, 6),
+			LayoutOrder = props.LayoutOrder,
+		}, {
+			Hint = hint("Draw your own lane lines, give way lines and centre lines on any road.", 1),
+			Start = button("Draw Markings", 2, Colors.ACTION_BLUE, function()
+				props.SetMarkingMode(true)
+			end),
+		})
+	end
+
+	local styleChoices = {}
+	for _, style in Markings.STYLES do
+		table.insert(styleChoices, { Value = style, Text = MARKING_STYLE_LABELS[style] or style })
+	end
+	local broken = state.Style == "Dashed" or state.Style == "GiveWay"
+	local applies = if state.LineSelected then "the selected line" else "new lines"
+	return e(SubPanel, {
+		Title = if state.Drawing
+			then `Drawing a Line ({state.DraftPoints} points)`
+			elseif state.LineSelected then "Road Marking"
+			else "Draw Markings",
+		Padding = UDim.new(0, 6),
+		LayoutOrder = props.LayoutOrder,
+	}, {
+		Hint = hint(
+			if state.Drawing
+				then "Click to add points; double-click or press Enter to finish, Esc to cancel. Points snap to the ends of other markings (green) or onto them (blue); hold Alt to place freely."
+				elseif state.LineSelected then "Drag the white knobs to move points (click one to select it) and the blue ones to add a point. Click elsewhere to deselect the line."
+				else "Click on a road to start a line, or click a line to edit it. Points snap to the ends of other markings, so lines join up with the road's own; hold Alt to place freely.",
+			1
+		),
+		DrawButtons = if state.Drawing
+			then buttonRow(2, {
+				{
+					Text = "Finish",
+					Disabled = state.DraftPoints < 2,
+					Color = Colors.ACTION_BLUE,
+					OnClick = function()
+						props.MarkingAction("Finish")
+					end,
+				},
+				{
+					Text = "Undo Point",
+					Disabled = false,
+					Color = Colors.ACTION_BLUE,
+					OnClick = function()
+						props.MarkingAction("UndoPoint")
+					end,
+				},
+				{
+					Text = "Cancel",
+					Disabled = false,
+					Color = Colors.DARK_RED,
+					OnClick = function()
+						props.MarkingAction("Cancel")
+					end,
+				},
+			})
+			else nil,
+		Style = chips(
+			3,
+			`The style of {applies}:`
+				.. "\n\u{2022} <b>Dashed</b>: a lane line."
+				.. "\n\u{2022} <b>Solid</b>: an edge or continuous line."
+				.. "\n\u{2022} <b>Give Way</b>: short wide dashes, as at a junction or roundabout entry."
+				.. "\n\u{2022} <b>Double</b>: a double continuous line.",
+			styleChoices,
+			state.Style,
+			"Style"
+		),
+		Colour = chips(
+			4,
+			`The colour of {applies}: the road's lane marking or centre line colour.`,
+			{ { Value = "White", Text = "White" }, { Value = "Yellow", Text = "Yellow" } },
+			state.Colour,
+			"Colour"
+		),
+		Shape = chips(
+			5,
+			`Whether {applies} curve smoothly through their points or run straight between them.`,
+			{ { Value = true, Text = "Curved" }, { Value = false, Text = "Straight" } },
+			state.Curved,
+			"Curved"
+		),
+		Width = numberField("Line Width", `The width of {applies}, in studs.`, 6, state.Width, 0.05, "Width"),
+		Dash = if broken
+			then numberField("Mark Length", `How long the marks of {applies} are, in studs.`, 7, state.Dash, 0, "Dash")
+			else nil,
+		Gap = if broken
+			then numberField("Gap Length", `How long the gaps between the marks of {applies} are, in studs.`, 8, state.Gap, 0, "Gap")
+			else nil,
+		LineButtons = if state.LineSelected
+			then buttonRow(9, {
+				{
+					Text = "Remove Point",
+					Disabled = state.SelectedPoint == nil or state.PointCount <= 2,
+					Color = Colors.ACTION_BLUE,
+					OnClick = function()
+						props.MarkingAction("RemovePoint")
+					end,
+				},
+				{
+					Text = "Delete Line",
+					Disabled = false,
+					Color = Colors.DARK_RED,
+					OnClick = function()
+						props.MarkingAction("Delete")
+					end,
+				},
+			})
+			else nil,
+		Stop = button("Stop Drawing", 10, Colors.ACTION_BLUE, function()
+			props.SetMarkingMode(false)
+		end),
+	})
+end
+
 local function RoadHelperGui(props: {
 	GuiState: PluginGuiTypes.PluginGuiMode,
 	SelectionState: createRoadSession.SelectionState,
@@ -1398,6 +1650,9 @@ local function RoadHelperGui(props: {
 	SetSizing: (name: string, value: number) -> (),
 	SetSameLanesBothEnds: (same: boolean) -> (),
 	RoundaboutAction: (action: string, value: any) -> (),
+	MarkingState: createRoadSession.MarkingState?,
+	SetMarkingMode: (on: boolean) -> (),
+	MarkingAction: (action: string, value: any) -> (),
 	AddSegment: (kind: RoadMath.SegmentKind) -> (),
 	AddIntersection: (throughRoad: boolean, miniRoundabout: boolean?) -> (),
 	AddRoundabout: () -> (),
@@ -1407,6 +1662,8 @@ local function RoadHelperGui(props: {
 	Panelized: boolean,
 })
 	local nextOrder = createNextOrder()
+	-- While drawing markings, the panel is about them alone
+	local drawing = props.MarkingState ~= nil and props.MarkingState.Active
 	return e(PluginGui, {
 		Config = ROADHELPER_CONFIG,
 		State = {
@@ -1419,6 +1676,12 @@ local function RoadHelperGui(props: {
 	}, {
 		StatusPanel = e(StatusPanel, {
 			SelectionState = props.SelectionState,
+			LayoutOrder = nextOrder(),
+		}),
+		MarkingsPanel = e(MarkingsPanel, {
+			MarkingState = props.MarkingState,
+			SetMarkingMode = props.SetMarkingMode,
+			MarkingAction = props.MarkingAction,
 			LayoutOrder = nextOrder(),
 		}),
 		ParametersPanel = e(ParametersPanel, {
@@ -1450,7 +1713,7 @@ local function RoadHelperGui(props: {
 			RoundaboutAction = props.RoundaboutAction,
 			LayoutOrder = nextOrder(),
 		}),
-		AddPanel = e(AddPanel, {
+		AddPanel = if drawing then nil else e(AddPanel, {
 			SelectionState = props.SelectionState,
 			CurrentSettings = props.CurrentSettings,
 			UpdatedSettings = props.UpdatedSettings,
@@ -1459,7 +1722,7 @@ local function RoadHelperGui(props: {
 			AddRoundabout = props.AddRoundabout,
 			LayoutOrder = nextOrder(),
 		}),
-		PresetsPanel = e(PresetsPanel, {
+		PresetsPanel = if drawing then nil else e(PresetsPanel, {
 			SelectionState = props.SelectionState,
 			CurrentSettings = props.CurrentSettings,
 			UpdatedSettings = props.UpdatedSettings,
