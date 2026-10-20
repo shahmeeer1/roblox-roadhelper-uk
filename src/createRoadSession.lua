@@ -35,6 +35,7 @@ local DraggerToolComponent = (require :: any)(DraggerFramework.DraggerTools.Drag
 local RoadMath = require("./RoadMath")
 local RoadDefaults = require("./RoadDefaults")
 local Markings = require("./Markings")
+local Finalise = require("./Finalise")
 local EndpointPickHandles = require("./Handles/EndpointPickHandles")
 local DeleteExitHandles = require("./Handles/DeleteExitHandles")
 local PartialRotateHandleView = require("./Dragger/PartialRotateHandleView")
@@ -131,6 +132,15 @@ export type SelectionState = {
 -- The Draw Markings tool's state, for the panel: whether it's on, the line
 -- being drawn, the selected line and point, and the style options shown
 -- (the selected line's, or those new lines get)
+-- What the Finalise Roads panel shows
+export type FinaliseState = {
+	-- A finalise or unfinalise is running (the buttons wait)
+	Busy: boolean,
+	-- Progress while busy, else the result of the last run
+	Status: string,
+	Options: Finalise.Options,
+}
+
 export type MarkingState = {
 	Active: boolean,
 	-- "Line" (draw a line) or "Zone" (divide a stretch of road into lanes)
@@ -3302,6 +3312,120 @@ local function createRoadSession(plugin: Plugin)
 		changeSignal:Fire()
 	end
 
+	--------------------------------------------------------------------------
+	-- Finalising roads
+	--------------------------------------------------------------------------
+
+	-- Optimise finished roads (see Finalise): they become plain models with
+	-- no generator, so they can't regenerate. Acts on the roads selected in
+	-- the Explorer, or on every road when none are.
+	local finaliseOptions: Finalise.Options = table.clone(Finalise.DEFAULT_OPTIONS)
+	local finaliseBusy = false
+	local finaliseStatus = ""
+
+	local function plural(count: number, word: string): string
+		return `{count} {word}{if count == 1 then "" else "s"}`
+	end
+
+	local function describeReport(report: Finalise.Report): string
+		local lines = {
+			`Finalised {plural(report.Roads, "road")}: {report.Before} parts down to {report.After}.`,
+		}
+		local removed = {}
+		if report.Helpers > 0 then
+			table.insert(removed, `{report.Helpers} helper or invisible`)
+		end
+		if report.Hidden > 0 then
+			table.insert(removed, `{report.Hidden} hidden`)
+		end
+		if #removed > 0 then
+			table.insert(lines, "Removed " .. table.concat(removed, ", ") .. " parts.")
+		end
+		if report.Unions > 0 then
+			table.insert(lines, `Merged {report.Merged} parts into {plural(report.Unions, "union")}.`)
+		end
+		if report.MergeNote then
+			table.insert(lines, report.MergeNote)
+		end
+		if report.Failed > 0 then
+			table.insert(lines, `{plural(report.Failed, "road")} couldn't be finalised (see the Output window).`)
+		end
+		return table.concat(lines, "\n")
+	end
+
+	-- Run a long operation as one undo step, keeping the panel up to date
+	local function runFinalise(title: string, work: () -> string)
+		finaliseBusy = true
+		finaliseStatus = title .. "..."
+		changeSignal:Fire()
+		task.spawn(function()
+			clearSelection()
+			beginRecording(title)
+			local ok, result = pcall(work)
+			if ok then
+				finishRecording()
+				finaliseStatus = result
+			else
+				cancelRecording()
+				finaliseStatus = "Failed: " .. tostring(result)
+				warn("RoadHelper: " .. title .. " failed: " .. tostring(result))
+			end
+			finaliseBusy = false
+			updateDragger()
+			changeSignal:Fire()
+		end)
+	end
+
+	local function finaliseAction(action: string, value: any)
+		if action == "Option" then
+			local name = value.Name
+			if finaliseOptions[name] ~= nil then
+				(finaliseOptions :: any)[name] = value.Value == true
+				changeSignal:Fire()
+			end
+			return
+		end
+		if finaliseBusy then
+			return
+		end
+		local chosen = Selection:Get()
+		if action == "Finalise" then
+			local models = if #chosen > 0 then Finalise.roadsIn(chosen) else Finalise.roadsIn({ workspace })
+			if #models == 0 then
+				finaliseStatus = "There are no roads to finalise."
+				changeSignal:Fire()
+				return
+			end
+			local options = table.clone(finaliseOptions)
+			runFinalise("Finalise Roads", function()
+				return describeReport(Finalise.finalise(models, options, function(text: string)
+					finaliseStatus = text
+					changeSignal:Fire()
+				end))
+			end)
+		elseif action == "Unfinalise" then
+			local models = if #chosen > 0 then Finalise.finalisedIn(chosen) else Finalise.findFinalised()
+			if #models == 0 then
+				finaliseStatus = "There are no finalised roads to restore."
+				changeSignal:Fire()
+				return
+			end
+			runFinalise("Unfinalise Roads", function()
+				local restored, missing = Finalise.unfinalise(models)
+				local text = `Restored {plural(restored, "road")}.`
+				if missing > 0 then
+					text ..= `\n{plural(missing, "road")} had no backup left, so stayed as they are.`
+				end
+				return text
+			end)
+		elseif action == "DeleteBackups" then
+			-- (Undoable like the rest, so it can't strand anything for good)
+			runFinalise("Delete Road Backups", function()
+				return `Deleted {plural(Finalise.deleteBackups(), "backup")}. Finalised roads can no longer be restored.`
+			end)
+		end
+	end
+
 	-- Panel actions on the selected roundabout: "Shape" (a preset name),
 	-- "AddCorner", "RemoveCorner", "CornerRadius", "RingLanes", "LaneWidth",
 	-- "SidewalkWidth", "ApronWidth", "AddArm", "ArmLength", "SplitterWidth",
@@ -3309,6 +3433,13 @@ local function createRoadSession(plugin: Plugin)
 	-- "RemoveArm", "ArmExit", "ArmEntry", "ArmAngle", "ArmOwnLength", "ArmSkew",
 	-- "ArmFlare", "ArmSplitter"
 	session.RoundaboutAction = roundaboutAction
+
+	-- Finalising roads: panel actions "Option" ({ Name, Value }), "Finalise",
+	-- "Unfinalise" and "DeleteBackups", and the panel's state
+	session.FinaliseAction = finaliseAction
+	function session.GetFinaliseState(): FinaliseState
+		return { Busy = finaliseBusy, Status = finaliseStatus, Options = table.clone(finaliseOptions) }
+	end
 
 	-- Draw Markings mode, its panel actions (see markingAction) and state
 	session.SetMarkingMode = setMarkingMode

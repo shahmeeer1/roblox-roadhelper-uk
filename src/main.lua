@@ -123,6 +123,12 @@ return function(plugin: Plugin, panel: DockWidgetPluginGui, buttonClicked: Signa
 						session.MarkingAction(action, value)
 					end
 				end,
+				FinaliseState = if session then session.GetFinaliseState() else nil,
+				FinaliseAction = function(action: string, value: any)
+					if session then
+						session.FinaliseAction(action, value)
+					end
+				end,
 				AddRoundabout = function()
 					if session then
 						local preset = Presets.ByKey[activeSettings.SelectedPreset]

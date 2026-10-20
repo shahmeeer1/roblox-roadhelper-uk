@@ -1700,6 +1700,107 @@ local function MarkingsPanel(props: {
 	})
 end
 
+local FINALISE_OPTIONS = {
+	{
+		Name = "RemoveHelpers",
+		Label = "Remove helper parts",
+		Help = "Delete snapping helper cubes and invisible parts that don't collide, which do nothing in a finished road.",
+	},
+	{
+		Name = "RemoveHidden",
+		Label = "Remove hidden parts",
+		Help = "Delete parts that sit wholly inside another solid part, where they can never be seen, and exact duplicates.",
+	},
+	{
+		Name = "TuneParts",
+		Label = "Set up parts for play",
+		Help = "Markings stop colliding, being hit by raycasts and casting shadows, and no part sends touch events or fluid forces. Turn it off if your scripts rely on Touched events from the road.",
+	},
+	{
+		Name = "Merge",
+		Label = "Merge parts (slow)",
+		Help = "Union parts that look alike into a few big ones, which is the biggest saving in parts for the engine to draw. It can take a while on large roads, and is worth checking afterwards: any group the engine can't union is left as it was.",
+	},
+}
+
+local function FinalisePanel(props: {
+	SelectionState: createRoadSession.SelectionState,
+	FinaliseState: createRoadSession.FinaliseState?,
+	FinaliseAction: (action: string, value: any) -> (),
+	LayoutOrder: number?,
+})
+	-- Alongside the Add section: it works on roads as a whole
+	local state = props.FinaliseState
+	if props.SelectionState.Kind ~= "none" or not state then
+		return nil :: any
+	end
+	local function text(label: string, order: number)
+		return e("TextLabel", {
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			TextColor3 = Colors.OFFWHITE,
+			Text = label,
+			TextWrapped = true,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Font = Enum.Font.SourceSans,
+			TextSize = 16,
+			RichText = true,
+			LayoutOrder = order,
+		})
+	end
+	local function button(label: string, order: number, color: Color3, action: string)
+		return e("Frame", {
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			LayoutOrder = order,
+		}, {
+			Button = e(OperationButton, {
+				Text = label,
+				Height = 28,
+				Disabled = state.Busy,
+				Color = color,
+				OnClick = function()
+					props.FinaliseAction(action, nil)
+				end,
+			}),
+		})
+	end
+	local children: { [string]: any } = {
+		Hint = text(
+			"Optimise finished roads: they become plain models with no generator, so they can no longer be edited or regenerated. Acts on the roads selected in the Explorer, or on every road if none are. A copy of each is kept in ServerStorage, so <b>Unfinalise</b> brings them back.",
+			1
+		),
+	}
+	for index, option in FINALISE_OPTIONS do
+		children[option.Name] = e(HelpGui.WithHelpIcon, {
+			Help = e(HelpGui.BasicTooltip, {
+				HelpRichText = option.Help,
+			}),
+			LayoutOrder = 1 + index,
+			Subject = e(Checkbox, {
+				Label = option.Label,
+				Checked = (state.Options :: any)[option.Name] == true,
+				Changed = function(checked: boolean)
+					props.FinaliseAction("Option", { Name = option.Name, Value = checked })
+				end,
+			}),
+		})
+	end
+	children.Finalise = button("Finalise Roads", 10, Colors.ACTION_BLUE, "Finalise")
+	children.Unfinalise = button("Unfinalise Roads", 11, Colors.GREY, "Unfinalise")
+	children.DeleteBackups = button("Delete Backups", 12, Colors.DARK_RED, "DeleteBackups")
+	if state.Status ~= "" then
+		children.Status = text(state.Status, 13)
+	end
+	return e(SubPanel, {
+		Title = "Finalise Roads",
+		Padding = UDim.new(0, 6),
+		LayoutOrder = props.LayoutOrder,
+	}, children)
+end
+
 local function RoadHelperGui(props: {
 	GuiState: PluginGuiTypes.PluginGuiMode,
 	SelectionState: createRoadSession.SelectionState,
@@ -1713,6 +1814,8 @@ local function RoadHelperGui(props: {
 	MarkingState: createRoadSession.MarkingState?,
 	SetMarkingMode: (on: boolean) -> (),
 	MarkingAction: (action: string, value: any) -> (),
+	FinaliseState: createRoadSession.FinaliseState?,
+	FinaliseAction: (action: string, value: any) -> (),
 	AddSegment: (kind: RoadMath.SegmentKind) -> (),
 	AddIntersection: (throughRoad: boolean, miniRoundabout: boolean?) -> (),
 	AddRoundabout: () -> (),
@@ -1786,6 +1889,12 @@ local function RoadHelperGui(props: {
 			SelectionState = props.SelectionState,
 			CurrentSettings = props.CurrentSettings,
 			UpdatedSettings = props.UpdatedSettings,
+			LayoutOrder = nextOrder(),
+		}),
+		FinalisePanel = if drawing then nil else e(FinalisePanel, {
+			SelectionState = props.SelectionState,
+			FinaliseState = props.FinaliseState,
+			FinaliseAction = props.FinaliseAction,
 			LayoutOrder = nextOrder(),
 		}),
 		CloseButton = e(CloseButton, {

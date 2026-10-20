@@ -74,6 +74,8 @@ lazy-loads `src/main.lua` on first activation.
 - `src/Presets.lua` — appearance presets applied by the panel's Add buttons.
 - `src/Markings.lua` — hand-drawn markings: line data, curve sampling, building strips,
   snapping.
+- `src/Finalise.lua` + `src/PartCulling.lua` — the Finalise Roads optimisation (below) and the
+  geometry for finding hidden parts.
 - `src/Settings.lua` — persisted plugin settings (saved on plugin unload).
 - `src/Templates/` — packaged copies of the generators, used as a fallback when the place has
   no segment of the needed kind. Note that adds normally clone an existing segment *including
@@ -197,6 +199,18 @@ lazy-loads `src/main.lua` on first activation.
   each reduced by Ramer-Douglas-Peucker (tolerance 0.6, since the line is drawn as a curve
   through its points) so the result is a few points of ordinary editable lines, created in
   one undo step.
+- Finalising (`Finalise`, the panel's Finalise Roads section, shown with nothing selected): turns
+  finished roads into plain Models so they can't regenerate. Per road it clones the original into
+  `ServerStorage.RoadHelperBackups` (named by a GUID, also stored in the `RoadHelperBackupId`
+  attribute of the finalised model, which is tagged `RoadHelperFinalised`), removes snapping
+  helpers and invisible non-colliding parts, removes parts strictly inside an opaque block or
+  exact duplicates (`PartCulling.findHidden`), tunes part properties (markings: no collide/query/
+  shadow; all: no touch or fluid forces), and optionally merges alike parts into unions with
+  `GeometryService:UnionAsync` in chunks (off by default; failed chunks are left as they were).
+  Hand-drawn markings are flattened into the same pool. Acts on the roads selected in the
+  Explorer, else all; the whole run is one undo recording. Unfinalise puts the backup back at
+  the finalised model's current pivot. `RoadMath.getSegmentInfo` ignores plain Models, so the
+  plugin no longer sees finalised roads.
 - The Adjust dir/grade/bank rotations all pivot about the endpoint centre point, so endpoint
   *positions* are invariant under angle edits — only move edits Size/pivot.
 - Joints are purely spatial: two ends within `RoadMath.JOINT_TOLERANCE` facing opposite ways.
